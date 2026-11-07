@@ -1514,6 +1514,35 @@ window.__ModuleLoader__.load({
       return bits
     }
 
+    /**
+     * Top edge of the composer card, found by walking up from our own toolbar
+     * button. The first ancestor tall enough to contain the editor and the tool
+     * row is the card; a full-height layout wrapper is rejected, because in the
+     * hero layout it would anchor the panel above the window.
+     *
+     * @param {object} node - the toolbar button element.
+     * @returns {number | null} viewport top of the composer, or null.
+     */
+    function composerTopOf(node) {
+      try {
+        let current = node
+        for (let depth = 0; depth < 6 && current !== null && current !== undefined; depth += 1) {
+          if (typeof current.getBoundingClientRect !== 'function') return null
+          const rect = current.getBoundingClientRect()
+          if (!Number.isFinite(rect.top)) return null
+          if (rect.height > 72 && rect.height < 420 && rect.width > 240) return rect.top
+          current = current.parentElement
+        }
+        if (typeof node.getBoundingClientRect === 'function') {
+          const own = node.getBoundingClientRect()
+          if (Number.isFinite(own.top)) return own.top
+        }
+      } catch (error) {
+        return null
+      }
+      return null
+    }
+
     function CraftPanel(props) {
       const key = currentSessionKey.length > 0 ? currentSessionKey : sessionKey(props?.sessionId)
       const task = getTask(key)
@@ -1524,6 +1553,13 @@ window.__ModuleLoader__.load({
       const [copiedId, setCopiedId] = useState(null)
       const [diffPreferences, setDiffPreferences] = useState({})
       const [showDiffDefault, setShowDiffDefault] = useState(false)
+      // The panel rides in the composer dock, then lifts itself above the input
+      // with fixed positioning. If the host layout makes that unreliable (a
+      // transformed ancestor changes the containing block), it falls back to the
+      // in-flow dock position instead of rendering off-screen.
+      const [anchor, setAnchor] = useState(null)
+      const [placement, setPlacement] = useState('floating')
+      const panelRef = useRef(null)
       useEffect(() => subscribeTask(key, () => setVersion((value) => value + 1)), [key])
       useEffect(() => {
         if (!shown) return undefined
@@ -1536,6 +1572,97 @@ window.__ModuleLoader__.load({
           cancelled = true
         }
       }, [shown])
+
+      useEffect(() => {
+        if (!shown) {
+          setPlacement('floating')
+          return undefined
+        }
+        let raf = 0
+        const measure = () => {
+          raf = 0
+          try {
+            if (typeof document === 'undefined' || typeof window === 'undefined') return
+            const width = Math.max(360, Math.min(760, window.innerWidth - 32))
+            const element = buttonNodes.get(key)
+            const rect = element !== null && element !== undefined && typeof element.getBoundingClientRect === 'function'
+              ? element.getBoundingClientRect()
+              : null
+            if (rect === null || !Number.isFinite(rect.top) || rect.top <= 0) {
+              setAnchor({ left: Math.max(16, window.innerWidth - width - 16), bottom: 120, width, maxHeight: Math.min(520, window.innerHeight - 160) })
+              return
+            }
+            const composerTop = composerTopOf(element)
+            const top = composerTop === null ? rect.top : composerTop
+            const left = Math.max(16, Math.min(rect.right - width, window.innerWidth - width - 16))
+            const desired = window.innerHeight - top + 10
+            const ceiling = Math.max(160, window.innerHeight - 240)
+            const bottom = Math.min(Math.max(desired, 72), ceiling)
+            const maxHeight = Math.max(160, Math.min(window.innerHeight * 0.6, window.innerHeight - bottom - 16))
+            setAnchor({ left, bottom, width, maxHeight })
+          } catch (error) {
+            setAnchor(null)
+          }
+        }
+        const schedule = () => {
+          if (typeof requestAnimationFrame !== 'function') {
+            measure()
+            return
+          }
+          if (raf !== 0) return
+          raf = requestAnimationFrame(measure)
+        }
+        measure()
+        const canListen = typeof window.addEventListener === 'function'
+        if (canListen) {
+          window.addEventListener('resize', schedule)
+          window.addEventListener('scroll', schedule, true)
+        }
+        return () => {
+          if (canListen) {
+            window.removeEventListener('resize', schedule)
+            window.removeEventListener('scroll', schedule, true)
+          }
+          if (raf !== 0 && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(raf)
+          raf = 0
+        }
+      }, [shown, task === null ? 'idle' : task.phase])
+
+      // One look at where the panel actually landed. If fixed positioning did not
+      // put it on screen and above the composer, switch to the in-flow position.
+      useEffect(() => {
+        if (!shown || anchor === null || placement !== 'floating') return
+        try {
+          const node = panelRef.current
+          if (node === null || node === undefined || typeof node.getBoundingClientRect !== 'function') return
+          if (typeof window === 'undefined') return
+          const rect = node.getBoundingClientRect()
+          const viewportWidth = window.innerWidth
+          const viewportHeight = window.innerHeight
+          const element = buttonNodes.get(key)
+          const composerTop = element === null || element === undefined ? null : composerTopOf(element)
+          const limit = composerTop === null ? viewportHeight : composerTop
+          const onScreen = rect.width > 0 && rect.height > 0
+            && rect.left >= -2 && rect.top >= -2
+            && rect.right <= viewportWidth + 2 && rect.bottom <= viewportHeight + 2
+          const aboveComposer = rect.bottom <= limit + 2
+          if (!onScreen || !aboveComposer) setPlacement('flow')
+        } catch (error) {
+          setPlacement('flow')
+        }
+      }, [anchor, shown, placement, key])
+
+      const floatStyle = placement === 'floating'
+        ? {
+          position: 'fixed',
+          left: anchor === null ? 24 : anchor.left,
+          bottom: anchor === null ? 120 : anchor.bottom,
+          width: anchor === null ? 680 : anchor.width,
+          maxHeight: anchor === null ? 420 : anchor.maxHeight,
+          zIndex: 2147483000,
+          pointerEvents: 'auto',
+        }
+        : undefined
 
       const t = (translationKey, params) => componentTranslate(props, translationKey, params)
 
@@ -1640,7 +1767,7 @@ window.__ModuleLoader__.load({
           }, '×'))
 
         if (task.phase === 'running') {
-          return h('div', { className: 'pc-panel', 'data-phase': 'running', 'data-panel': 'prompt-craft' },
+          return h('div', { className: 'pc-panel', 'data-phase': 'running', 'data-panel': 'prompt-craft', ref: panelRef, style: floatStyle },
             header(t('panel.cancel')),
             h('div', { className: 'pc-skeleton', 'aria-label': t('panel.running') },
               h('i', { className: 'pc-skeleton-bar' }),
@@ -1652,7 +1779,7 @@ window.__ModuleLoader__.load({
         }
 
         if (task.phase === 'error') {
-          return h('div', { className: 'pc-panel', 'data-phase': 'error', 'data-panel': 'prompt-craft' },
+          return h('div', { className: 'pc-panel', 'data-phase': 'error', 'data-panel': 'prompt-craft', ref: panelRef, style: floatStyle },
             header(t('panel.close')),
             h('p', { className: 'pc-error', role: 'alert' }, task.error ?? t('error.badPayload')),
             h('div', { className: 'pc-panel-actions' },
@@ -1662,7 +1789,7 @@ window.__ModuleLoader__.load({
 
         // Applied results fold into a one-line summary until expanded.
         if (task.applied !== null && task.collapsed === true) {
-          return h('div', { className: 'pc-panel pc-panel-summary', 'data-phase': 'ready', 'data-panel': 'prompt-craft' },
+          return h('div', { className: 'pc-panel pc-panel-summary', 'data-phase': 'ready', 'data-panel': 'prompt-craft', ref: panelRef, style: floatStyle },
             h('span', { className: 'pc-check', 'aria-hidden': 'true' }, '✓'),
             h('span', { className: 'pc-summary-text' }, t('panel.summary', { count: task.candidates.length })),
             h('span', { className: 'pc-summary-spacer' }),
@@ -1787,6 +1914,8 @@ window.__ModuleLoader__.load({
           'data-panel': 'prompt-craft',
           role: 'region',
           'aria-label': t('panel.title'),
+          ref: panelRef,
+          style: floatStyle,
         },
           header(t('panel.close')),
           task.applied !== null ? h('div', { className: 'pc-applied' }, t('panel.applied')) : null,
@@ -1797,7 +1926,7 @@ window.__ModuleLoader__.load({
             h('button', { type: 'button', className: 'pc-btn', onClick: () => closeTask(key) }, t('panel.close'))))
       } catch (error) {
         // Rendering must never escape: a thrown slot blanks the whole dock.
-        return h('div', { className: 'pc-panel', 'data-panel': 'prompt-craft' },
+        return h('div', { className: 'pc-panel', 'data-panel': 'prompt-craft', ref: panelRef, style: floatStyle },
           h('div', { className: 'pc-panel-head' },
             h('span', { className: 'pc-panel-title' }, componentTranslate(props, 'panel.title'))))
       }
