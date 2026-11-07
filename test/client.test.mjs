@@ -369,7 +369,7 @@ function slotEntry(name) {
 }
 
 const Button = slotEntry('conversation.input.right').component
-const Panel = slotEntry('shell.overlay').component
+const Panel = slotEntry('conversation.composer.dock').component
 const Settings = slotEntry('settings.section').component
 
 // ---------------------------------------------------------------------------
@@ -483,7 +483,7 @@ test('apply registers one bilingual locale table and the three contract slots', 
   assert.equal(button.options.order, -100)
   assert.equal(typeof button.component, 'function')
 
-  const panel = slotEntry('shell.overlay')
+  const panel = slotEntry('conversation.composer.dock')
   assert.equal(panel.options.id, 'prompt-craft-panel')
   assert.equal(panel.options.order, 2)
   assert.equal(typeof panel.component, 'function')

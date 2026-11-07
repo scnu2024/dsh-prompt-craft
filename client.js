@@ -24,7 +24,7 @@ window.__ModuleLoader__.load({
 
     const NS = 'prompt-craft'
     const BUTTON_SLOT = 'conversation.input.right'
-    const PANEL_SLOT = 'shell.overlay'
+    const PANEL_SLOT = 'conversation.composer.dock'
     const SETTINGS_SLOT = 'settings.section'
     const BUTTON_ID = 'prompt-craft'
     const PANEL_ID = 'prompt-craft-panel'
@@ -969,10 +969,9 @@ window.__ModuleLoader__.load({
 
     const tasks = new Map()
     const taskListeners = new Map()
-    // The panel lives in the frame-wide overlay (a root-scoped slot with no
-    // sessionId), so it needs the currently mounted composer's session and the
-    // toolbar button's element to anchor itself above. Both are published by the
-    // session-scoped button, which is mounted for every composer.
+    // The panel and the button live in two different slots, so the composer's
+    // live session key is published by the session-scoped button and read by the
+    // panel. The button element is kept too: a future floating seat needs it.
     let currentSessionKey = ''
     const buttonNodes = new Map()
     // The overlay panel has no composer props of its own, so the session-scoped
@@ -1515,34 +1514,6 @@ window.__ModuleLoader__.load({
       return bits
     }
 
-    /**
-     * Top edge of the whole composer card, found by walking up from our own
-     * toolbar button. Measuring the button alone would place the panel over the
-     * user's draft, because the button sits in the bottom tool row.
-     *
-     * @param {object} node - the button element.
-     * @returns {number | null} viewport top of the composer, or null.
-     */
-    function composerTopOf(node) {
-      try {
-        let current = node
-        for (let depth = 0; depth < 6 && current !== null && current !== undefined; depth += 1) {
-          if (typeof current.getBoundingClientRect !== 'function') return null
-          const rect = current.getBoundingClientRect()
-          if (!Number.isFinite(rect.top)) return null
-          if (rect.height > 72 && rect.width > 240) return rect.top
-          current = current.parentElement
-        }
-        if (typeof node.getBoundingClientRect === 'function') {
-          const own = node.getBoundingClientRect()
-          if (Number.isFinite(own.top)) return own.top
-        }
-      } catch (error) {
-        return null
-      }
-      return null
-    }
-
     function CraftPanel(props) {
       const key = currentSessionKey.length > 0 ? currentSessionKey : sessionKey(props?.sessionId)
       const task = getTask(key)
@@ -1553,10 +1524,6 @@ window.__ModuleLoader__.load({
       const [copiedId, setCopiedId] = useState(null)
       const [diffPreferences, setDiffPreferences] = useState({})
       const [showDiffDefault, setShowDiffDefault] = useState(false)
-      // The panel floats above the composer, anchored to this plugin's own
-      // toolbar button. It is not in flow anywhere, so it never pushes the
-      // conversation and never appears below the input.
-      const [anchor, setAnchor] = useState(null)
       useEffect(() => subscribeTask(key, () => setVersion((value) => value + 1)), [key])
       useEffect(() => {
         if (!shown) return undefined
@@ -1569,67 +1536,6 @@ window.__ModuleLoader__.load({
           cancelled = true
         }
       }, [shown])
-
-      useEffect(() => {
-        if (!shown) return undefined
-        let raf = 0
-        const measure = () => {
-          raf = 0
-          try {
-            if (typeof document === 'undefined' || typeof window === 'undefined') return
-            const width = Math.max(360, Math.min(760, window.innerWidth - 32))
-            const element = buttonNodes.get(key)
-            const rect = element !== null && element !== undefined && typeof element.getBoundingClientRect === 'function'
-              ? element.getBoundingClientRect()
-              : null
-            if (rect === null || !Number.isFinite(rect.top) || rect.top <= 0) {
-              setAnchor({ left: Math.max(16, window.innerWidth - width - 16), bottom: 120, width, maxHeight: Math.min(520, window.innerHeight - 160) })
-              return
-            }
-            const composerTop = composerTopOf(element)
-            const top = composerTop === null ? rect.top : composerTop
-            const left = Math.max(16, Math.min(rect.right - width, window.innerWidth - width - 16))
-            const bottom = Math.max(16, window.innerHeight - top + 10)
-            const maxHeight = Math.max(200, Math.min(window.innerHeight * 0.6, top - 24))
-            setAnchor({ left, bottom, width, maxHeight })
-          } catch (error) {
-            setAnchor(null)
-          }
-        }
-        const schedule = () => {
-          if (typeof requestAnimationFrame !== 'function') {
-            measure()
-            return
-          }
-          if (raf !== 0) return
-          raf = requestAnimationFrame(measure)
-        }
-        measure()
-        const canListen = typeof window.addEventListener === 'function'
-        if (canListen) {
-          window.addEventListener('resize', schedule)
-          window.addEventListener('scroll', schedule, true)
-        }
-        return () => {
-          if (canListen) {
-            window.removeEventListener('resize', schedule)
-            window.removeEventListener('scroll', schedule, true)
-          }
-          if (raf !== 0 && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(raf)
-          raf = 0
-        }
-        // Re-anchor when the run state changes: the composer body can grow.
-      }, [shown, task === null ? 'idle' : task.phase])
-
-      const floatStyle = {
-        position: 'fixed',
-        left: anchor === null ? 24 : anchor.left,
-        bottom: anchor === null ? 120 : anchor.bottom,
-        width: anchor === null ? 680 : anchor.width,
-        maxHeight: anchor === null ? 420 : anchor.maxHeight,
-        zIndex: 90,
-        pointerEvents: 'auto',
-      }
 
       const t = (translationKey, params) => componentTranslate(props, translationKey, params)
 
@@ -1734,7 +1640,7 @@ window.__ModuleLoader__.load({
           }, '×'))
 
         if (task.phase === 'running') {
-          return h('div', { className: 'pc-panel', 'data-phase': 'running', 'data-panel': 'prompt-craft', style: floatStyle },
+          return h('div', { className: 'pc-panel', 'data-phase': 'running', 'data-panel': 'prompt-craft' },
             header(t('panel.cancel')),
             h('div', { className: 'pc-skeleton', 'aria-label': t('panel.running') },
               h('i', { className: 'pc-skeleton-bar' }),
@@ -1746,7 +1652,7 @@ window.__ModuleLoader__.load({
         }
 
         if (task.phase === 'error') {
-          return h('div', { className: 'pc-panel', 'data-phase': 'error', 'data-panel': 'prompt-craft', style: floatStyle },
+          return h('div', { className: 'pc-panel', 'data-phase': 'error', 'data-panel': 'prompt-craft' },
             header(t('panel.close')),
             h('p', { className: 'pc-error', role: 'alert' }, task.error ?? t('error.badPayload')),
             h('div', { className: 'pc-panel-actions' },
@@ -1756,7 +1662,7 @@ window.__ModuleLoader__.load({
 
         // Applied results fold into a one-line summary until expanded.
         if (task.applied !== null && task.collapsed === true) {
-          return h('div', { className: 'pc-panel pc-panel-summary', 'data-phase': 'ready', 'data-panel': 'prompt-craft', style: floatStyle },
+          return h('div', { className: 'pc-panel pc-panel-summary', 'data-phase': 'ready', 'data-panel': 'prompt-craft' },
             h('span', { className: 'pc-check', 'aria-hidden': 'true' }, '✓'),
             h('span', { className: 'pc-summary-text' }, t('panel.summary', { count: task.candidates.length })),
             h('span', { className: 'pc-summary-spacer' }),
@@ -1881,7 +1787,6 @@ window.__ModuleLoader__.load({
           'data-panel': 'prompt-craft',
           role: 'region',
           'aria-label': t('panel.title'),
-          style: floatStyle,
         },
           header(t('panel.close')),
           task.applied !== null ? h('div', { className: 'pc-applied' }, t('panel.applied')) : null,
@@ -1892,7 +1797,7 @@ window.__ModuleLoader__.load({
             h('button', { type: 'button', className: 'pc-btn', onClick: () => closeTask(key) }, t('panel.close'))))
       } catch (error) {
         // Rendering must never escape: a thrown slot blanks the whole dock.
-        return h('div', { className: 'pc-panel', 'data-panel': 'prompt-craft', style: floatStyle },
+        return h('div', { className: 'pc-panel', 'data-panel': 'prompt-craft' },
           h('div', { className: 'pc-panel-head' },
             h('span', { className: 'pc-panel-title' }, componentTranslate(props, 'panel.title'))))
       }
