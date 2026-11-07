@@ -1,0 +1,18 @@
+# macOS
+.DS_Store
+
+# dependencies
+node_modules/
+
+# build output
+dist/
+*.tgz
+
+# local state
+*.log
+debug.log
+.env
+
+# editor
+.vscode/
+.idea/

@@ -1,0 +1,7 @@
+# Bundle patch layer: one row loads this package's main entry (the Host half).
+# The package.json `dsh.client` declaration makes the web app load ./client as
+# the browser half, which renders the composer button, the preview panel and the
+# settings page.
+- insert:
+    - id: prompt-craft
+      name: dsh-prompt-craft

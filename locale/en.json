@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Prompt craft",
+    "description": "A composer button that clarifies a draft prompt without adding anything to it: missing details become questions, not invented placeholders. Two versions are previewed below the composer and written back only when you click apply."
+  }
+}
