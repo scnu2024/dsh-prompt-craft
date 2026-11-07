@@ -7,8 +7,10 @@
  * the user clicks apply; the Host half owns normalisation and quality checks.
  *
  * The module is a single plain-JS file loaded by the browser module table:
- * React is the only module it requires, every colour comes from a theme token,
- * and all user-visible copy lives in the locale tables below.
+ * React is the only hard requirement, react-dom is used through one guarded
+ * require when the host exposes it (the preview is portalled out of the
+ * composer's containing block), every colour comes from a theme token, and all
+ * user-visible copy lives in the locale tables below.
  *
  * Contract: ./CONTRACT.md
  *
@@ -21,6 +23,8 @@ window.__ModuleLoader__.load({
     const React = require('react')
     const h = React.createElement
     const { useEffect, useRef, useState } = React
+    /** Measure before the first paint where the runtime supports it. */
+    const useMeasureEffect = typeof React.useLayoutEffect === 'function' ? React.useLayoutEffect : useEffect
 
     const NS = 'prompt-craft'
     const BUTTON_SLOT = 'conversation.input.right'
@@ -1515,27 +1519,87 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * Top edge of the composer card, found by walking up from our own toolbar
-     * button. The first ancestor tall enough to contain the editor and the tool
-     * row is the card; a full-height layout wrapper is rejected, because in the
-     * hero layout it would anchor the panel above the window.
+     * `react-dom` is exposed to package modules next to React; the composer
+     * slots sit inside the composer card, whose layout contains fixed children
+     * (the slot ledger asks fixed overlays to portal to the document body for
+     * exactly this reason). Resolve it lazily so a missing entry can never
+     * break module evaluation, and keep the plain element as the fallback.
+     *
+     * @param {object} element - React element to lift to the document body.
+     * @returns {object} a portal when available, the element otherwise.
+     */
+    let portalCreate = undefined
+    function portalToBody(element) {
+      if (portalCreate === undefined) {
+        portalCreate = null
+        try {
+          const dom = require('react-dom')
+          if (dom !== null && typeof dom === 'object' && typeof dom.createPortal === 'function') {
+            portalCreate = dom.createPortal
+          }
+        } catch (error) {
+          portalCreate = null
+        }
+      }
+      if (portalCreate === null) return element
+      try {
+        if (typeof document === 'undefined' || document === null) return element
+        const body = document.body
+        if (body === null || body === undefined) return element
+        return portalCreate(element, body)
+      } catch (error) {
+        return element
+      }
+    }
+
+    /**
+     * Box of the composer card, found by walking up from our own toolbar
+     * button to the element the conversation shell marks with
+     * `data-composer-card`. The height heuristic is only a fallback for hosts
+     * that predate the marker, and a full-height layout wrapper is rejected
+     * because in the hero layout it would anchor the panel off-screen.
      *
      * @param {object} node - the toolbar button element.
-     * @returns {number | null} viewport top of the composer, or null.
+     * @returns {{ top: number, left: number, width: number } | null} viewport box.
      */
-    function composerTopOf(node) {
+    function composerBoxOf(node) {
+      const boxFrom = (element) => {
+        try {
+          if (typeof element.getBoundingClientRect !== 'function') return null
+          const rect = element.getBoundingClientRect()
+          if (!Number.isFinite(rect.top) || !Number.isFinite(rect.left)) return null
+          if (rect.width <= 240) return null
+          return { top: rect.top, left: rect.left, width: rect.width }
+        } catch (error) {
+          return null
+        }
+      }
+
       try {
         let current = node
-        for (let depth = 0; depth < 6 && current !== null && current !== undefined; depth += 1) {
-          if (typeof current.getBoundingClientRect !== 'function') return null
-          const rect = current.getBoundingClientRect()
-          if (!Number.isFinite(rect.top)) return null
-          if (rect.height > 72 && rect.height < 420 && rect.width > 240) return rect.top
+        for (let depth = 0; depth < 12 && current !== null && current !== undefined; depth += 1) {
+          if (typeof current.getAttribute === 'function' && current.getAttribute('data-composer-card') !== null) {
+            return boxFrom(current)
+          }
           current = current.parentElement
         }
-        if (typeof node.getBoundingClientRect === 'function') {
-          const own = node.getBoundingClientRect()
-          if (Number.isFinite(own.top)) return own.top
+        current = node
+        for (let depth = 0; depth < 8 && current !== null && current !== undefined; depth += 1) {
+          if (typeof current.getBoundingClientRect !== 'function') return null
+          const rect = current.getBoundingClientRect()
+          if (!Number.isFinite(rect.top) || !Number.isFinite(rect.left)) return null
+          if (rect.height > 72 && rect.height < 620 && rect.width > 240) {
+            return { top: rect.top, left: rect.left, width: rect.width }
+          }
+          current = current.parentElement
+        }
+        current = node
+        for (let depth = 0; depth < 4 && current !== null && current !== undefined; depth += 1) {
+          const own = current.getBoundingClientRect()
+          if (Number.isFinite(own.top) && Number.isFinite(own.left)) {
+            return { top: own.top, left: own.left, width: 0 }
+          }
+          current = current.parentElement
         }
       } catch (error) {
         return null
@@ -1573,7 +1637,7 @@ window.__ModuleLoader__.load({
         }
       }, [shown])
 
-      useEffect(() => {
+      useMeasureEffect(() => {
         if (!shown) {
           setPlacement('floating')
           return undefined
@@ -1583,22 +1647,23 @@ window.__ModuleLoader__.load({
           raf = 0
           try {
             if (typeof document === 'undefined' || typeof window === 'undefined') return
-            const width = Math.max(360, Math.min(760, window.innerWidth - 32))
+            const viewportWidth = window.innerWidth
+            const viewportHeight = window.innerHeight
+            const fallbackWidth = Math.max(360, Math.min(760, viewportWidth - 32))
             const element = buttonNodes.get(key)
-            const rect = element !== null && element !== undefined && typeof element.getBoundingClientRect === 'function'
-              ? element.getBoundingClientRect()
-              : null
-            if (rect === null || !Number.isFinite(rect.top) || rect.top <= 0) {
-              setAnchor({ left: Math.max(16, window.innerWidth - width - 16), bottom: 120, width, maxHeight: Math.min(520, window.innerHeight - 160) })
+            const box = element === null || element === undefined ? null : composerBoxOf(element)
+            if (box === null || !Number.isFinite(box.top) || box.top <= 0) {
+              setAnchor({ left: Math.max(16, viewportWidth - fallbackWidth - 16), bottom: 120, width: fallbackWidth, maxHeight: Math.min(520, viewportHeight - 160) })
               return
             }
-            const composerTop = composerTopOf(element)
-            const top = composerTop === null ? rect.top : composerTop
-            const left = Math.max(16, Math.min(rect.right - width, window.innerWidth - width - 16))
-            const desired = window.innerHeight - top + 10
-            const ceiling = Math.max(160, window.innerHeight - 240)
-            const bottom = Math.min(Math.max(desired, 72), ceiling)
-            const maxHeight = Math.max(160, Math.min(window.innerHeight * 0.6, window.innerHeight - bottom - 16))
+            // Sit directly above the composer card, never wider than it.
+            const width = box.width > 0
+              ? Math.max(320, Math.min(box.width, Math.min(860, viewportWidth - 24)))
+              : fallbackWidth
+            const left = Math.max(12, Math.min(box.left + (box.width - width) / 2, viewportWidth - width - 12))
+            const bottom = Math.max(24, viewportHeight - box.top + 10)
+            const room = Math.max(160, Math.min(viewportHeight * 0.62, box.top - 24))
+            const maxHeight = Math.max(160, Math.min(room, viewportHeight - bottom - 12))
             setAnchor({ left, bottom, width, maxHeight })
           } catch (error) {
             setAnchor(null)
@@ -1628,8 +1693,9 @@ window.__ModuleLoader__.load({
         }
       }, [shown, task === null ? 'idle' : task.phase])
 
-      // One look at where the panel actually landed. If fixed positioning did not
-      // put it on screen and above the composer, switch to the in-flow position.
+      // One look at where the panel actually landed. A portal can only fail to
+      // leave the composer's containing block, and in that case the in-flow dock
+      // seat is the honest fallback: visible below the card instead of gone.
       useEffect(() => {
         if (!shown || anchor === null || placement !== 'floating') return
         try {
@@ -1640,8 +1706,8 @@ window.__ModuleLoader__.load({
           const viewportWidth = window.innerWidth
           const viewportHeight = window.innerHeight
           const element = buttonNodes.get(key)
-          const composerTop = element === null || element === undefined ? null : composerTopOf(element)
-          const limit = composerTop === null ? viewportHeight : composerTop
+          const box = element === null || element === undefined ? null : composerBoxOf(element)
+          const limit = box === null ? viewportHeight : box.top
           const onScreen = rect.width > 0 && rect.height > 0
             && rect.left >= -2 && rect.top >= -2
             && rect.right <= viewportWidth + 2 && rect.bottom <= viewportHeight + 2
@@ -1663,6 +1729,12 @@ window.__ModuleLoader__.load({
           pointerEvents: 'auto',
         }
         : undefined
+
+      // A portalled panel uses the body as its containing block, so the fixed
+      // coordinates measured above are true viewport coordinates. Without
+      // react-dom the element stays in the dock and the geometry guard settles
+      // it in flow.
+      const mount = (element) => (placement === 'floating' ? portalToBody(element) : element)
 
       const t = (translationKey, params) => componentTranslate(props, translationKey, params)
 
@@ -1767,7 +1839,7 @@ window.__ModuleLoader__.load({
           }, '×'))
 
         if (task.phase === 'running') {
-          return h('div', { className: 'pc-panel', 'data-phase': 'running', 'data-panel': 'prompt-craft', ref: panelRef, style: floatStyle },
+          return mount(h('div', { className: 'pc-panel', 'data-phase': 'running', 'data-panel': 'prompt-craft', ref: panelRef, style: floatStyle },
             header(t('panel.cancel')),
             h('div', { className: 'pc-skeleton', 'aria-label': t('panel.running') },
               h('i', { className: 'pc-skeleton-bar' }),
@@ -1775,26 +1847,26 @@ window.__ModuleLoader__.load({
               h('i', { className: 'pc-skeleton-bar' })),
             h('div', { className: 'pc-panel-actions' },
               h('span', { className: 'pc-panel-meta' }, t('panel.running')),
-              h('button', { type: 'button', className: 'pc-btn', onClick: () => abortTask(key) }, t('panel.cancel'))))
+              h('button', { type: 'button', className: 'pc-btn', onClick: () => abortTask(key) }, t('panel.cancel')))))
         }
 
         if (task.phase === 'error') {
-          return h('div', { className: 'pc-panel', 'data-phase': 'error', 'data-panel': 'prompt-craft', ref: panelRef, style: floatStyle },
+          return mount(h('div', { className: 'pc-panel', 'data-phase': 'error', 'data-panel': 'prompt-craft', ref: panelRef, style: floatStyle },
             header(t('panel.close')),
             h('p', { className: 'pc-error', role: 'alert' }, task.error ?? t('error.badPayload')),
             h('div', { className: 'pc-panel-actions' },
               h('button', { type: 'button', className: 'pc-btn pc-btn-primary', onClick: retry }, t('panel.retry')),
-              h('button', { type: 'button', className: 'pc-btn', onClick: () => closeTask(key) }, t('panel.close'))))
+              h('button', { type: 'button', className: 'pc-btn', onClick: () => closeTask(key) }, t('panel.close')))))
         }
 
         // Applied results fold into a one-line summary until expanded.
         if (task.applied !== null && task.collapsed === true) {
-          return h('div', { className: 'pc-panel pc-panel-summary', 'data-phase': 'ready', 'data-panel': 'prompt-craft', ref: panelRef, style: floatStyle },
+          return mount(h('div', { className: 'pc-panel pc-panel-summary', 'data-phase': 'ready', 'data-panel': 'prompt-craft', ref: panelRef, style: floatStyle },
             h('span', { className: 'pc-check', 'aria-hidden': 'true' }, '✓'),
             h('span', { className: 'pc-summary-text' }, t('panel.summary', { count: task.candidates.length })),
             h('span', { className: 'pc-summary-spacer' }),
             h('button', { type: 'button', className: 'pc-btn', onClick: () => patchTask(key, { collapsed: false }) }, t('panel.expand')),
-            h('button', { type: 'button', className: 'pc-btn', onClick: () => closeTask(key) }, t('panel.close')))
+            h('button', { type: 'button', className: 'pc-btn', onClick: () => closeTask(key) }, t('panel.close'))))
         }
 
         const stale = task.applied !== null && draft !== task.applied.text
@@ -1908,7 +1980,7 @@ window.__ModuleLoader__.load({
             actions)
         }
 
-        return h('div', {
+        return mount(h('div', {
           className: 'pc-panel',
           'data-phase': 'ready',
           'data-panel': 'prompt-craft',
@@ -1923,12 +1995,12 @@ window.__ModuleLoader__.load({
           renderQuestions(),
           h('div', { className: 'pc-cards' }, task.candidates.map(renderCard)),
           h('div', { className: 'pc-panel-actions' },
-            h('button', { type: 'button', className: 'pc-btn', onClick: () => closeTask(key) }, t('panel.close'))))
+            h('button', { type: 'button', className: 'pc-btn', onClick: () => closeTask(key) }, t('panel.close')))))
       } catch (error) {
         // Rendering must never escape: a thrown slot blanks the whole dock.
-        return h('div', { className: 'pc-panel', 'data-panel': 'prompt-craft', ref: panelRef, style: floatStyle },
+        return mount(h('div', { className: 'pc-panel', 'data-panel': 'prompt-craft', ref: panelRef, style: floatStyle },
           h('div', { className: 'pc-panel-head' },
-            h('span', { className: 'pc-panel-title' }, componentTranslate(props, 'panel.title'))))
+            h('span', { className: 'pc-panel-title' }, componentTranslate(props, 'panel.title')))))
       }
     }
 
@@ -2312,7 +2384,14 @@ window.__ModuleLoader__.load({
     }
 
     // Pure functions the tests drive directly (CONTRACT §2).
-    apply.__internals = { planInsertion, diffTokens, buildEnhanceBody, ratioOf }
+    apply.__internals = {
+      buildEnhanceBody,
+      composerBoxOf,
+      diffTokens,
+      planInsertion,
+      portalToBody,
+      ratioOf,
+    }
 
     return {
       inject: ['slots', 'locale'],

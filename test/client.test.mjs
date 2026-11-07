@@ -495,7 +495,76 @@ test('apply registers one bilingual locale table and the three contract slots', 
   assert.equal(settings.options.label(), EN.nav)
   assert.equal(typeof settings.component, 'function')
 
-  assert.deepEqual(Object.keys(internals).sort(), ['buildEnhanceBody', 'diffTokens', 'planInsertion', 'ratioOf'])
+  assert.deepEqual(Object.keys(internals).sort(), [
+    'buildEnhanceBody',
+    'composerBoxOf',
+    'diffTokens',
+    'planInsertion',
+    'portalToBody',
+    'ratioOf',
+  ])
+})
+
+test('the composer box is measured from the marked card, never from the window', () => {
+  const rect = (top, left, width, height) => ({ top, left, width, height, right: left + width, bottom: top + height })
+  const card = {
+    getAttribute: (name) => (name === 'data-composer-card' ? '' : null),
+    getBoundingClientRect: () => rect(300, 40, 640, 140),
+    parentElement: null,
+  }
+  const toolRow = {
+    getAttribute: () => null,
+    getBoundingClientRect: () => rect(400, 40, 640, 40),
+    parentElement: card,
+  }
+  const button = {
+    getAttribute: () => null,
+    getBoundingClientRect: () => rect(410, 600, 24, 24),
+    parentElement: toolRow,
+  }
+  assert.deepEqual(internals.composerBoxOf(button), { top: 300, left: 40, width: 640 })
+
+  // Without the marker the height heuristic still lands on the card instead of
+  // a full-height layout wrapper.
+  const plainCard = {
+    getAttribute: () => null,
+    getBoundingClientRect: () => rect(280, 24, 700, 160),
+    parentElement: {
+      getAttribute: () => null,
+      getBoundingClientRect: () => rect(0, 0, 1280, 800),
+      parentElement: null,
+    },
+  }
+  const plainButton = {
+    getAttribute: () => null,
+    getBoundingClientRect: () => rect(400, 640, 24, 24),
+    parentElement: plainCard,
+  }
+  assert.deepEqual(internals.composerBoxOf(plainButton), { top: 280, left: 24, width: 700 })
+  assert.equal(internals.composerBoxOf({}), null)
+})
+
+test('the preview portals to the body when react-dom is exposed, and degrades to the element', () => {
+  const element = { type: 'div' }
+  // The main instance is built with a strict two-module stub, so the guarded
+  // require misses and the element is rendered where it sits.
+  assert.equal(internals.portalToBody(element), element)
+
+  const withPortal = definition.factory((name) => {
+    if (name === 'react') return React
+    if (name === 'react-dom') {
+      return { createPortal: (children, target) => ({ portal: children, target }) }
+    }
+    throw new Error(`unexpected module request: ${name}`)
+  })
+  const previousDocument = globalThis.document
+  globalThis.document = { body: { tag: 'body' } }
+  try {
+    const wrapped = withPortal.apply.__internals.portalToBody(element)
+    assert.deepEqual(wrapped, { portal: element, target: { tag: 'body' } })
+  } finally {
+    globalThis.document = previousDocument
+  }
 })
 
 test('every visible string exists in both the zh and en tables', () => {
@@ -525,10 +594,17 @@ test('every visible string exists in both the zh and en tables', () => {
 test('the bundle is dependency-free, JSX-free, and coloured from theme tokens only', () => {
   const source = readFileSync(new URL('../client.js', import.meta.url), 'utf8')
   assert.equal(source.includes('@deepseek-ai/'), false)
-  assert.equal(source.includes('document.body'), false)
-  assert.equal(source.includes('querySelector'), false)
+  // Host-provided runtimes only: React always, and react-dom through one
+  // guarded require that the portal helper resolves lazily.
   const requires = [...source.matchAll(/require\('([^']+)'\)/gu)].map((match) => match[1])
-  assert.deepEqual(requires, ['react'])
+  assert.deepEqual(requires, ['react', 'react-dom'])
+  // The host DOM is touched in exactly two sanctioned places: the body portal
+  // and the read-only composer box probe. Nothing else may query the document.
+  assert.equal((source.match(/document\.body/gu) ?? []).length, 1)
+  // No document or ancestor queries: the card is found through the shell's own
+  // `data-composer-card` marker instead.
+  assert.equal((source.match(/querySelector/gu) ?? []).length, 0)
+  assert.equal(source.includes('innerHTML'), false)
 
   const marker = 'const css = `'
   const cssStart = source.indexOf(marker)

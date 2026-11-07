@@ -90,7 +90,7 @@
 
 ## 2. 客户端模块形状
 
-`client.js` 是单文件浏览器模块，无构建、无依赖，只能 `require('react')`：
+`client.js` 是单文件浏览器模块，无构建、无第三方依赖，只 `require('react')`，另有一次受控的 `require('react-dom')`（宿主已提供，用来把面板 portal 到 `document.body`，拿不到时退回元素内渲染）：
 
 ```js
 window.__ModuleLoader__.load({
@@ -103,10 +103,11 @@ window.__ModuleLoader__.load({
 })
 ```
 
-- 不 import 任何 `@deepseek-ai/*` 包，不读别的插件 DOM，不往 `document.body` 追加东西，不用 JSX。
+- 不 import 任何 `@deepseek-ai/*` 包，不读别的插件 DOM，不用 JSX。
+- 宿主 DOM 只有两处受控触点：`react-dom` 的 `createPortal(…, document.body)`（把面板移出 composer 的包含块），以及只读地量取「自己按钮的祖先里带 `data-composer-card` 标记的那张卡片」的 `getBoundingClientRect()`；不做任何 `document` 查询。
 - `apply(ctx)` 里用 `ctx.effect` 注册样式（一次性 `<style>`，类名前缀 `pc-`）与三处 slot。
 - 文案全部走 locale，中英各一份，不得硬编码中文在组件里。
-- 为了可测，把纯函数挂到 `apply.__internals = { planInsertion, diffTokens, buildEnhanceBody, ratioOf }`。
+- 为了可测，把纯函数挂到 `apply.__internals = { planInsertion, diffTokens, buildEnhanceBody, ratioOf, composerBoxOf, portalToBody }`。
 
 ---
 
@@ -115,7 +116,7 @@ window.__ModuleLoader__.load({
 | 槽位 | id | order | 组件 |
 |---|---|---|---|
 | `conversation.input.right` | `prompt-craft` | `-100` | `CraftButton` |
-| `shell.overlay` | `prompt-craft-panel` | `2` | `CraftPanel`（浮层，锚定在输入框上方，不占布局流） |
+| `conversation.composer.dock` | `prompt-craft-panel` | `2` | `CraftPanel`（座位在 dock；渲染时 portal 到 body，用 fixed 锚定在输入框卡片上方，不占布局流；无 `react-dom` 时退回 dock 内的流式位置） |
 | `settings.section` | `prompt-craft` | `50` | `CraftSettings`（`label: () => t('nav')`） |
 
 注册写法：
@@ -192,7 +193,7 @@ inputActions.captureInsertion()                          // → { draftRev, … 
 
 ---
 
-## 7. 面板结构（`shell.overlay`，浮在输入框上方）
+## 7. 面板结构（`conversation.composer.dock` + body portal，浮在输入框上方）
 
 ```
 ┌ 打磨结果 · DeepSeek V4.1 Flash · 4.2s ───────────── × ┐
