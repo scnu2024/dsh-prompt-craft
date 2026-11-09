@@ -34,7 +34,7 @@ git clone https://github.com/scnu2024/dsh-prompt-craft.git
 dsh plugin --profile desktop add ./dsh-prompt-craft
 ```
 
-本次源码使用 v2 请求协议。升级后重启 Harness 并刷新窗口，旧客户端会收到刷新提示。原有设置继续生效；旧版临时预览缓存不迁移。
+1.1.0 使用 v2 请求协议，支持输入框图片，应用成功后自动关闭预览。升级后重启 Harness 并刷新窗口，旧客户端会收到刷新提示。原有设置继续生效；旧版临时预览缓存不迁移。
 
 ## 使用
 

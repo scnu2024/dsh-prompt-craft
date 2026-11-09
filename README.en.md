@@ -29,7 +29,7 @@ dsh plugin --profile desktop add dsh-prompt-craft
 dsh plugin --profile web add dsh-prompt-craft
 ```
 
-For source installs, clone this repository and add its local directory. Restart Harness and refresh its window after upgrading. This source uses protocol v2; old clients receive an explicit refresh message. Settings remain compatible; old temporary preview caches are not migrated.
+For source installs, clone this repository and add its local directory. Version 1.1.0 uses protocol v2, supports draft images, and closes the preview after successful application. Restart Harness and refresh its window after upgrading. Old clients receive an explicit refresh message. Settings remain compatible; old temporary preview caches are not migrated.
 
 ## Preview and editing
 
