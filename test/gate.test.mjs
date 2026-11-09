@@ -67,10 +67,10 @@ test('an invented path or number is flagged', () => {
 	assert.ok(verdict.invented.includes('/Users/me/report.md'));
 });
 
-test('template headings are flagged only when the draft had none', () => {
+test('headings are allowed when they help organize a task', () => {
 	const draft = '帮我把这个函数拆成两个';
 	const templated = '## 目标\n把这个函数拆成两个。\n## 要求\n保持行为不变。';
-	assert.ok(detectViolations({ draft, text: templated, id: 'clear' }).codes.includes('template'));
+	assert.deepEqual(detectViolations({ draft, text: templated, id: 'clear' }).codes, []);
 
 	const structuredDraft = '## 目标\n拆分函数\n## 要求\n行为不变';
 	assert.ok(!detectViolations({ draft: structuredDraft, text: structuredDraft, id: 'clear' }).codes.includes('template'));
@@ -81,11 +81,11 @@ test('a placeholder in the rewrite is flagged', () => {
 	assert.ok(verdict.codes.includes('placeholder'));
 });
 
-test('padding is flagged for a long draft but exempted for a tiny one', () => {
+test('repetition is flagged independently of draft length', () => {
 	const draft = '帮我把这份季度销售报告里的所有数字按地区汇总成一张表，并且标注每个地区的同比变化，最后给出三条结论。';
 	const bloated = `${draft}另外请注意保持格式整洁，不要遗漏任何内容，确保结果清晰可读，方便后续使用和分享给大家。`.repeat(2);
-	assert.ok(detectViolations({ draft, text: bloated, id: 'clear' }).codes.includes('bloat'));
-	assert.ok(!detectViolations({ draft: '帮我改个名字', text: '帮我改个名字，尽量简短', id: 'terse' }).codes.includes('bloat'));
+	assert.ok(detectViolations({ draft, text: bloated, id: 'clear' }).codes.includes('repetition'));
+	assert.ok(!detectViolations({ draft: '帮我改个名字', text: '帮我改个名字，尽量简短', id: 'terse' }).codes.includes('repetition'));
 });
 
 test('a number range counts as a concrete fact', () => {
@@ -97,6 +97,34 @@ test('repairLines names what has to go', () => {
 	const verdict = detectViolations({ draft: '整理一下', text: '## 目标\n把 /a/b.md 整理成 <表格>\n## 要求\n别改内容', id: 'clear' });
 	const lines = repairLines(verdict);
 	assert.ok(lines.some((line) => line.includes('/a/b.md')));
-	assert.ok(lines.some((line) => line.includes('template') || line.includes('template') || line.includes('headings')));
+	assert.ok(lines.some((line) => line.includes('placeholder')));
 	assert.ok(lines.length >= 2);
+});
+
+test('near duplicate prose is rejected but code and quoted source are preserved',()=>{
+  const repeated='请先分析现有实现中的关键问题，再针对主要瓶颈优化代码。请先分析现有实现中的关键问题，再针对主要瓶颈优化代码呀。';
+  assert.ok(detectViolations({draft:'优化代码',text:repeated}).codes.includes('repetition'));
+  const code='```js\nconst x = 1;\nconst x = 1;\n```';
+  assert.ok(!detectViolations({draft:code,text:code}).codes.includes('repetition'));
+  const quotes='引用：“保留这里已经确认的事实。”\n引用：“保留这里已经确认的事实。”';
+  assert.ok(!detectViolations({draft:quotes,text:quotes}).codes.includes('repetition'));
+});
+test('preexisting repeated instructions remain allowed',()=>{
+  const draft='先分析现有实现，再优化代码。先分析现有实现，再优化代码。';
+  assert.ok(!detectViolations({draft,text:draft}).codes.includes('repetition'));
+});
+test('absolute output length is bounded while useful expansion is allowed',()=>{
+  assert.ok(detectViolations({draft:'整理资料',text:'资料'.repeat(6100)}).codes.includes('output-too-long'));
+  const text='阅读提供的资料，提取主要观点，按主题关系组织内容，并核对结论与材料是否一致。';
+  assert.deepEqual(detectViolations({draft:'整理资料',text}).codes,[]);
+});
+
+test('unpunctuated repeated additions are rejected too',()=>{
+  assert.ok(detectViolations({draft:'优化代码',text:'分析当前实现并消除重复计算'.repeat(5)}).codes.includes('repetition'));
+});
+
+test('references to an existing numbered list are organization, not invented quantities',()=>{
+  assert.deepEqual([...extractFacts('1. 先检查\n2. 后整理\n参考第 1 部分和 section 2。')],[]);
+  assert.ok(extractFacts('1. 先检查\n再写 5 条结论。').has('5'));
+  assert.ok(extractFacts('参考第 3 部分。').has('3'));
 });

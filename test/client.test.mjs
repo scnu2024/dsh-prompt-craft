@@ -103,6 +103,10 @@ function renderOnce(instance) {
   currentInstance = instance
   hookCursor = 0
   const tree = instance.component(instance.props)
+  if (instance.mounted) {
+    assert.equal(hookCursor, instance.hookCount, 'React hook count changed between renders')
+  }
+  instance.hookCount = hookCursor
   instance.tree = tree
   instance.dirty = false
   const jobs = []
@@ -225,7 +229,7 @@ const CATALOG = {
 }
 
 const SUCCESS_PAYLOAD = {
-  ok: true,
+  ok: true, protocolVersion: 2, status: 'ready',
   questions: [
     {
       q: 'Which file is the target?',
@@ -256,13 +260,13 @@ function settingsValues(overrides = {}) {
 
 function defaultRouter(request) {
   if (request.url === '/api/prompt-craft/enhance') {
-    return { status: 200, body: SUCCESS_PAYLOAD }
+    return { status: 200, body: request.body?.clarificationMode === 'proceed' ? { ...SUCCESS_PAYLOAD, questions: [] } : SUCCESS_PAYLOAD }
   }
-  if (request.url === '/api/prompt-craft/settings') {
+  if (request.url.split('?')[0] === '/api/prompt-craft/settings') {
     if (request.method === 'POST') {
-      return { status: 200, body: { ok: true, values: settingsValues(request.body ?? {}) } }
+      return { status: 200, body: { ok: true, protocolVersion: 2, status: 'ready', values: settingsValues(request.body ?? {}) } }
     }
-    return { status: 200, body: { ok: true, values: settingsValues(), catalog: CATALOG } }
+    return { status: 200, body: { ok: true, protocolVersion: 2, status: 'ready', values: settingsValues(), catalog: CATALOG } }
   }
   return { status: 404, body: { ok: false, message: 'not found' } }
 }
@@ -303,7 +307,7 @@ function enhanceCalls() {
 }
 
 function settingsCalls() {
-  return fetchCalls.filter((call) => call.url === '/api/prompt-craft/settings')
+  return fetchCalls.filter((call) => call.url.split('?')[0] === '/api/prompt-craft/settings')
 }
 
 // ---------------------------------------------------------------------------
@@ -339,7 +343,10 @@ const locale = {
 }
 
 const slotRegistrations = []
+const draftRegistry = new Map(['file-a','file-b','new-file'].map(id=>[id,{id,kind:'file',file:{name:id}}]))
+const conversation = {resolveDraftAttachments:ids=>ids.map(id=>draftRegistry.get(id)).filter(Boolean)}
 const ctx = {
+  conversation,
   locale,
   slots: {
     inject(name, callback) {
@@ -369,7 +376,7 @@ function slotEntry(name) {
 }
 
 const Button = slotEntry('conversation.input.right').component
-const Panel = slotEntry('conversation.composer.dock').component
+const Panel = slotEntry('conversation.input.overlay').component
 const Settings = slotEntry('settings.section').component
 
 // ---------------------------------------------------------------------------
@@ -385,7 +392,13 @@ function makeInput(overrides = {}) {
     attachmentIds: [],
     ...overrides,
   }
-  return { state, useInput: (selector) => selector(state) }
+  return {
+    state,
+    useInput: (selector) => {
+      React.useRef(null)
+      return selector(state)
+    },
+  }
 }
 
 function makeInsertActions(options = {}) {
@@ -397,6 +410,7 @@ function makeInsertActions(options = {}) {
     get revision() {
       return revision
     },
+    bumpRevision() { revision += 1 },
     insertText(text, span) {
       calls.push({ text, start: span?.start, end: span?.end, draftRev: span?.draftRev })
       revision += 1
@@ -458,14 +472,14 @@ test('the client module registers the expected bundle id and module shape', () =
   assert.equal(definition.id, 'dsh-prompt-craft')
   assert.equal(typeof definition.factory, 'function')
   assert.deepEqual(requestedModules, ['react'])
-  assert.deepEqual(plugin.inject, ['slots', 'locale'])
+  assert.deepEqual(plugin.inject, ['slots', 'locale', 'conversation'])
   assert.equal(typeof plugin.apply, 'function')
 
   const fresh = definition.factory((name) => {
     if (name === 'react') return React
     throw new Error(`unexpected module request: ${name}`)
   })
-  assert.deepEqual(fresh.inject, ['slots', 'locale'])
+  assert.deepEqual(fresh.inject, ['slots', 'locale', 'conversation'])
   assert.equal(typeof fresh.apply, 'function')
 })
 
@@ -483,7 +497,7 @@ test('apply registers one bilingual locale table and the three contract slots', 
   assert.equal(button.options.order, -100)
   assert.equal(typeof button.component, 'function')
 
-  const panel = slotEntry('conversation.composer.dock')
+  const panel = slotEntry('conversation.input.overlay')
   assert.equal(panel.options.id, 'prompt-craft-panel')
   assert.equal(panel.options.order, 2)
   assert.equal(typeof panel.component, 'function')
@@ -499,8 +513,10 @@ test('apply registers one bilingual locale table and the three contract slots', 
     'buildEnhanceBody',
     'composerBoxOf',
     'diffTokens',
+    'panelGeometry',
     'planInsertion',
     'portalToBody',
+    'prepareDraftImages',
     'ratioOf',
   ])
 })
@@ -614,8 +630,9 @@ test('the bundle is dependency-free, JSX-free, and coloured from theme tokens on
   assert.equal(/#[0-9a-fA-F]{3,8}\b/u.test(stylesheet), false, 'hard-coded hex colour')
   assert.equal(/\b(?:rgb|rgba|hsl|hsla)\(/u.test(stylesheet), false, 'hard-coded functional colour')
   assert.ok(stylesheet.includes('var(--dsw-alias-'), 'stylesheet does not use theme tokens')
-  assert.ok(stylesheet.includes('40vh'), 'panel height cap missing')
-  assert.ok(stylesheet.includes('12em'), 'card text height cap missing')
+  assert.ok(stylesheet.includes('.pc-panel-body'), 'dedicated reading scroll area missing')
+  assert.equal(/\.pc-card-text\s*\{[^}]*max-height/u.test(stylesheet), false, 'nested text scroll cap must be removed')
+  assert.ok(stylesheet.includes('prefers-reduced-motion'), 'motion preference missing')
   assert.ok(stylesheet.includes('color-mix('), 'added-fragment highlight missing')
   assert.ok(stylesheet.includes('.pc-'), 'class prefix missing')
 })
@@ -736,7 +753,7 @@ test('ratioOf and buildEnhanceBody follow the frozen request shape', () => {
   assert.equal(ratioOf('', 'anything'), 1)
   assert.equal(ratioOf('same', 'same'), 1)
 
-  assert.deepEqual(buildEnhanceBody({ draft: 'hi' }), { draft: 'hi' })
+  assert.deepEqual(buildEnhanceBody({ protocolVersion: 2, draft: 'hi' }), { protocolVersion: 2, draft: 'hi' })
 
   assert.deepEqual(buildEnhanceBody({
     sessionId: 'session-x',
@@ -745,6 +762,7 @@ test('ratioOf and buildEnhanceBody follow the frozen request shape', () => {
     answers: { 'Which file?': 'report.md' },
     revise: { id: 'terse', text: 'old text', instruction: 'specific' },
   }), {
+    protocolVersion: 2,
     draft: 'please tidy',
     sessionId: 'session-x',
     attachments: [{ index: 1, name: 'slides.pdf', kind: 'file' }],
@@ -753,7 +771,7 @@ test('ratioOf and buildEnhanceBody follow the frozen request shape', () => {
   })
 
   // Empty answers, unknown instruction and invalid revise are omitted/normalised.
-  assert.deepEqual(buildEnhanceBody({ draft: 'x', answers: { q: '  ' } }), { draft: 'x' })
+  assert.deepEqual(buildEnhanceBody({ draft: 'x', answers: { q: '  ' } }), { protocolVersion: 2, draft: 'x' })
   assert.deepEqual(
     buildEnhanceBody({ draft: 'x', revise: { id: 'a', text: 't', instruction: 'whatever' } }).revise,
     { id: 'a', text: 't', instruction: 'shorter' },
@@ -783,7 +801,7 @@ test('the composer button hides for empty/whitespace drafts and reports its stat
   unmount(root)
 
   const panelRoot = createRoot(Panel, composerProps('session-idle', input))
-  assert.equal(await settle(panelRoot), null, 'the dock panel must be empty when idle')
+  assert.equal(await settle(panelRoot), null, 'the overlay panel must be empty when idle')
   unmount(panelRoot)
 })
 
@@ -799,7 +817,7 @@ test('a click sends the expected request and the panel previews the candidate', 
   const calls = enhanceCalls()
   assert.equal(calls.length, 1)
   assert.equal(calls[0].method, 'POST')
-  assert.deepEqual(calls[0].body, { draft: 'Summarise the weekly report', sessionId })
+  assert.deepEqual(calls[0].body, { protocolVersion: 2, draft: 'Summarise the weekly report', sessionId, revisionContext: { versions: [], improvements: [] } })
 
   const panel = flow.panelTree
   assert.equal(panel.type, 'div')
@@ -810,21 +828,16 @@ test('a click sends the expected request and the panel previews the candidate', 
 
   const cards = findNodes(panel, (node) => node.type === 'article')
   assert.equal(cards.length, 1)
-  assert.equal(textContent(cards[0]), [
-    'Clear',
-    EN['card.ratio'].replace('{ratio}', '1.3'),
-    EN['warning.invented'].replace('{count}', '2'),
-    'Summarise report.md in five bullets.',
-    EN['card.compare'],
-    EN['card.apply'],
-    EN['card.shorter'],
-    EN['card.specific'],
-    EN['card.copy'],
-  ].join(''))
-  assert.equal(allText(panel).some((text) => /^\d+\.\dx$/u.test(text)), true, 'length ratio badge missing')
+  assert.ok(textIncludes(cards[0], 'Summarise report.md in five bullets.'))
+  assert.ok(textIncludes(cards[0], EN['warning.invented'].replace('{count}', '2')))
+  assert.ok(textIncludes(cards[0], EN['card.chars'].replace('{before}', '27').replace('{after}', '36')))
+  const body = findNodes(panel, node => node.props?.className === 'pc-panel-body')[0]
+  const foot = findNodes(panel, node => node.props?.className === 'pc-panel-foot')[0]
+  assert.ok(body && foot)
+  assert.ok(findButton(foot, EN['card.apply']), 'apply stays outside the reading scroll area')
 
   // Questions: text, why and option chips are all rendered.
-  assert.equal(textIncludes(panel, EN['panel.questionsTitle']), true)
+  assert.ok(findButton(panel, EN['panel.questionsTitle']))
   assert.equal(textIncludes(panel, 'Which file is the target?'), true)
   assert.equal(textIncludes(panel, 'The draft only says'), true)
   assert.ok(findButton(panel, 'report.md'))
@@ -840,6 +853,78 @@ test('a click sends the expected request and the panel previews the candidate', 
 
   unmount(flow.buttonRoot)
   unmount(flow.panelRoot)
+})
+
+test('a mounted panel keeps its hooks when the toolbar unmounts', async () => {
+  const input = makeInput({ draft: 'Summarise the weekly report' })
+  const flow = await craft('session-toolbar-unmount', input, makeInsertActions())
+  unmount(flow.buttonRoot)
+  assert.equal((await settle(flow.panelRoot)).props['data-phase'], 'ready')
+  click(findButton(flow.panelTree, EN['panel.close']))
+  assert.equal(await settle(flow.panelRoot), null)
+  unmount(flow.panelRoot)
+})
+
+test('each panel uses its own session when another composer mounts', async () => {
+  const input = makeInput({ draft: 'Summarise the weekly report' })
+  const flow = await craft('session-panel-owner', input, makeInsertActions())
+  const otherInput = makeInput({ draft: 'Write an email' })
+  const otherButton = createRoot(Button, composerProps('session-other-composer', otherInput))
+  await settle(otherButton)
+  assert.equal((await settle(flow.panelRoot))?.props['data-phase'], 'ready')
+  const otherPanel = createRoot(Panel, otherButton.props)
+  assert.equal(await settle(otherPanel), null)
+  unmount(otherButton)
+  unmount(otherPanel)
+  unmount(flow.buttonRoot)
+  unmount(flow.panelRoot)
+})
+
+test('the panel can mount idle, switch sessions during a request, return and apply', async () => {
+  let finish
+  resetRoutes((request) => request.url === '/api/prompt-craft/enhance'
+    ? new Promise((resolve) => { finish = resolve })
+    : defaultRouter(request))
+  const input = makeInput({ draft: 'Summarise the weekly report', draftRev: 3 })
+  const actions = makeInsertActions()
+  const props = composerProps('session-pending-owner', input, actions)
+  const panel = createRoot(Panel, props)
+  assert.equal(await settle(panel), null)
+  const button = createRoot(Button, props)
+  click(await settle(button))
+  assert.equal((await settle(panel)).props['data-phase'], 'running')
+
+  const other = composerProps('session-pending-other', makeInput({ draft: 'Write an email' }))
+  panel.props = other
+  assert.equal(await settle(panel), null)
+  finish({ status: 200, body: SUCCESS_PAYLOAD })
+  await flushTasks()
+  assert.equal(panel.dirty, false, 'a background task must not update the other session')
+  panel.props = props
+  assert.equal((await settle(panel)).props['data-phase'], 'ready')
+  click(findButton(panel.tree, EN['card.apply']))
+  await settle(panel)
+  assert.equal(actions.calls.length, 1)
+  assert.equal(other.inputActions.calls.length, 0)
+  assert.equal(await settle(panel), null)
+  unmount(button)
+  unmount(panel)
+})
+
+test('typing into an empty composer attaches a stable toolbar anchor', async () => {
+  const input = makeInput()
+  const button = createRoot(Button, composerProps('session-late-anchor', input))
+  assert.equal(await settle(button), null)
+  input.state.draft = 'Summarise the weekly report'
+  const first = await settle(button)
+  assert.equal(typeof first.props.ref, 'function')
+  const node = {}
+  first.props.ref(node)
+  input.state.draft += ' clearly'
+  const next = await settle(button)
+  assert.equal(next.props.ref, first.props.ref, 'rerendering must not detach the anchor')
+  next.props.ref(null)
+  unmount(button)
 })
 
 test('answers are sent back with the regenerate request and ignore clears the questions', async () => {
@@ -879,7 +964,7 @@ test('answers are sent back with the regenerate request and ignore clears the qu
 // Applying a candidate
 // ---------------------------------------------------------------------------
 
-test('apply replaces a chip-free draft in one insertText call and folds the panel', async () => {
+test('apply replaces a chip-free draft in one insertText call and closes the panel', async () => {
   const sessionId = 'session-apply'
   const draft = 'Summarise the weekly report'
   const input = makeInput({ draft, draftRev: 3 })
@@ -896,21 +981,10 @@ test('apply replaces a chip-free draft in one insertText call and folds the pane
     draftRev: 5,
   }])
 
-  // Applied results fold into a summary line.
-  assert.equal(flow.panelTree.props['data-phase'], 'ready')
-  assert.equal(textIncludes(flow.panelTree, EN['panel.summary'].replace('{count}', '1')), true)
-  assert.ok(findButton(flow.panelTree, EN['panel.expand']))
-  assert.ok(findButton(flow.panelTree, EN['panel.close']))
-
-  // Expanding shows the cards again; the composer draft did not move in this
-  // fake, so the apply action now asks to regenerate instead.
-  click(findButton(flow.panelTree, EN['panel.expand']))
-  await settle(flow.panelRoot)
-  assert.equal(findNodes(flow.panelTree, (node) => node.type === 'article').length, 1)
-  assert.ok(findButton(flow.panelTree, EN['panel.staleApply']))
+  assert.equal(flow.panelTree, null)
 
   await settle(flow.buttonRoot)
-  assert.equal(flow.buttonTree.props['aria-label'], EN['button.done'])
+  assert.equal(flow.buttonTree.props['aria-label'], EN['button.idle'])
 
   unmount(flow.buttonRoot)
   unmount(flow.panelRoot)
@@ -927,7 +1001,7 @@ test('apply keeps attachment chips: back-to-front runs, chips never covered', as
       return {
         status: 200,
         body: {
-          ok: true,
+          ok: true, protocolVersion: 2, status: 'ready',
           questions: [],
           candidates: [{ id: 'terse', label: 'Terse', text: 'tidy \uFFFC up', warnings: [] }],
           meta: { model: 'deepseek-flash', elapsedMs: 1200 },
@@ -954,11 +1028,7 @@ test('apply keeps attachment chips: back-to-front runs, chips never covered', as
   ])
   assert.equal(inserts.calls[0].text.includes('\uFFFC'), false, 'ghost attachment placeholder was written')
 
-  // Applied work collapses to a one-line summary; expanding keeps the notice.
-  assert.equal(textIncludes(flow.panelTree, EN['panel.summary'].replace('{count}', '1')), true)
-  click(findButton(flow.panelTree, EN['panel.expand']))
-  await settle(flow.panelRoot)
-  assert.equal(textIncludes(flow.panelTree, EN['panel.applied']), true)
+  assert.equal(flow.panelTree, null)
 
   unmount(flow.buttonRoot)
   unmount(flow.panelRoot)
@@ -979,7 +1049,7 @@ test('shorter/specific requests carry revise and replace only that card', async 
       return {
         status: 200,
         body: {
-          ok: true,
+          ok: true, protocolVersion: 2, status: 'ready',
           questions: [],
           candidates: [{ id: 'clear', label: 'Clear', text: 'Summarise.', warnings: [] }],
           meta: { model: 'deepseek-flash', elapsedMs: 800 },
@@ -1136,7 +1206,7 @@ test('clicking the spinning button aborts, returns to idle, and keeps the draft'
   unmount(panelRoot)
 })
 
-test('the dock shows the running skeleton and its cancel button stops the run', async () => {
+test('the overlay shows the running skeleton and its cancel button stops the run', async () => {
   const sessionId = 'session-cancel'
   const input = makeInput({ draft: 'Summarise the weekly report', draftRev: 0 })
   const hangingRouter = (request) => {
@@ -1165,7 +1235,7 @@ test('the dock shows the running skeleton and its cancel button stops the run', 
   const panelRoot = createRoot(Panel, props)
   const runningTree = renderOnce(panelRoot)
   assert.equal(runningTree.props['data-phase'], 'running')
-  assert.equal(textIncludes(runningTree, EN['panel.running']), true)
+  assert.equal(textIncludes(runningTree, EN['panel.duration'].replace('{seconds}', '0')), true)
   assert.ok(findNodes(runningTree, (node) => node.props?.className === 'pc-skeleton-bar').length > 0)
 
   click(findButton(runningTree, EN['panel.cancel']))
@@ -1187,7 +1257,7 @@ test('a composer that refuses the edit shows the refusal notice', async () => {
   click(findButton(flow.panelTree, EN['card.apply']))
   await settle(flow.panelRoot)
 
-  assert.equal(inserts.calls.length, 2, 'the writer retries exactly once per span')
+  assert.equal(inserts.calls.length, 1, 'a refused span stops the writer')
   assert.equal(textIncludes(flow.panelTree, EN['panel.refused']), true)
   assert.equal(findNodes(flow.panelTree, (node) => node.type === 'article').length, 1)
 
@@ -1215,14 +1285,14 @@ test('close dismisses the panel and returns the button to idle', async () => {
 
 test('settings loads values and catalog, and save posts split provider/model', async () => {
   const router = (request) => {
-    if (request.url === '/api/prompt-craft/settings') {
+    if (request.url.split('?')[0] === '/api/prompt-craft/settings') {
       if (request.method === 'POST') {
-        return { status: 200, body: { ok: true, values: settingsValues(request.body ?? {}) } }
+        return { status: 200, body: { ok: true, protocolVersion: 2, status: 'ready', values: settingsValues(request.body ?? {}) } }
       }
       return {
         status: 200,
         body: {
-          ok: true,
+          ok: true, protocolVersion: 2, status: 'ready',
           values: settingsValues({ preferences: 'Prefer bullets', context: false, showDiff: true }),
           catalog: CATALOG,
         },
@@ -1297,7 +1367,7 @@ test('settings loads values and catalog, and save posts split provider/model', a
 
 test('settings degrades to preferences and switches when the catalog cannot be read', async () => {
   const router = (request) => {
-    if (request.url === '/api/prompt-craft/settings') {
+    if (request.url.split('?')[0] === '/api/prompt-craft/settings') {
       return { status: 500, body: { ok: false, code: 'STORE_DOWN', message: 'broken store' } }
     }
     return defaultRouter(request)
@@ -1318,4 +1388,682 @@ test('settings degrades to preferences and switches when the catalog cannot be r
   assert.equal(textIncludes(tree, EN['settings.loadFailed'].replace('{message}', 'broken store')), true)
 
   unmount(root)
+})
+
+test('editing before the first apply marks the result stale and never writes', async () => {
+  const input = makeInput({ draft: 'Summarise the report' })
+  const actions = makeInsertActions()
+  const flow = await craft('guard-first-apply', input, actions)
+  input.state.draft = 'Keep this newly edited draft'
+  actions.bumpRevision()
+  await settle(flow.panelRoot)
+  assert.ok(findButton(flow.panelTree, EN['panel.staleApply']))
+  assert.equal(findButton(flow.panelTree, EN['card.apply']), null)
+  assert.equal(actions.calls.length, 0)
+  unmount(flow.buttonRoot)
+  unmount(flow.panelRoot)
+})
+
+test('a click handler captured before a revision change still refuses the write', async () => {
+  const actions = makeInsertActions()
+  const flow = await craft('guard-stale-handler', makeInput({ draft: 'Summarise the report' }), actions)
+  const apply = findButton(flow.panelTree, EN['card.apply'])
+  actions.bumpRevision()
+  click(apply)
+  await settle(flow.panelRoot)
+  assert.equal(actions.calls.length, 0)
+  assert.equal(textIncludes(flow.panelTree, EN['panel.staleApply']), true)
+  unmount(flow.buttonRoot)
+  unmount(flow.panelRoot)
+})
+
+test('attachment changes invalidate an otherwise unchanged draft', async () => {
+  const input = makeInput({ draft: 'Summarise the file', attachmentIds: ['file-a'] })
+  const flow = await craft('guard-attachment', input, makeInsertActions())
+  input.state.attachmentIds = ['file-b']
+  await settle(flow.panelRoot)
+  assert.ok(findButton(flow.panelTree, EN['panel.staleApply']))
+  unmount(flow.buttonRoot)
+  unmount(flow.panelRoot)
+})
+
+test('applying the same result twice is idempotent', async () => {
+  const input = makeInput({ draft: 'Summarise the report' })
+  const actions = makeInsertActions()
+  const flow = await craft('guard-idempotent', input, actions)
+  const apply = findButton(flow.panelTree, EN['card.apply'])
+  click(apply)
+  input.state.draft = SUCCESS_PAYLOAD.candidates[0].text
+  input.state.draftRev = actions.revision
+  await settle(flow.panelRoot)
+  click(apply)
+  await settle(flow.panelRoot)
+  assert.equal(actions.calls.length, 1)
+  assert.equal(flow.panelTree, null)
+  unmount(flow.buttonRoot)
+  unmount(flow.panelRoot)
+})
+
+test('a partial attachment replacement stops and reports an undo instruction', async () => {
+  const input = makeInput({ draft: 'tidy \uFFFC up', occurrences: [{ offset: 5, length: 10, clipboardText: 'slides.pdf' }] })
+  const actions = makeInsertActions({ accept: (count) => count === 1 })
+  const flow = await craft('guard-partial', input, actions)
+  click(findButton(flow.panelTree, EN['card.apply']))
+  await settle(flow.panelRoot)
+  assert.equal(actions.calls.length, 2)
+  assert.equal(textIncludes(flow.panelTree, EN['panel.partial']), true)
+  assert.ok(findButton(flow.panelTree, EN['card.copy']))
+  unmount(flow.buttonRoot)
+  unmount(flow.panelRoot)
+})
+
+test('answers and attachment names survive consecutive revise operations and retry', async () => {
+  const input = makeInput({ draft: 'tidy \uFFFC up', occurrences: [{ offset: 5, length: 10, clipboardText: 'slides.pdf' }] })
+  const flow = await craft('revise-retains-facts', input, makeInsertActions())
+  click(findButton(flow.panelTree, 'report.md'))
+  await settle(flow.panelRoot)
+  click(findButton(flow.panelTree, EN['panel.questionsSubmit']))
+  await settle(flow.panelRoot)
+  const expectedAnswers = enhanceCalls().at(-1).body.answers
+  click(findButton(flow.panelTree, EN['card.shorter']))
+  await settle(flow.panelRoot)
+  assert.deepEqual(enhanceCalls().at(-1).body.answers, expectedAnswers)
+  assert.equal(enhanceCalls().at(-1).body.attachments[0].name, 'slides.pdf')
+  activeRouter = (request) => request.url === '/api/prompt-craft/enhance'
+    ? { status: 502, body: { ok: false, message: 'temporary failure' } } : defaultRouter(request)
+  click(findButton(flow.panelTree, EN['card.specific']))
+  await settle(flow.panelRoot)
+  assert.equal(textIncludes(flow.panelTree, SUCCESS_PAYLOAD.candidates[0].text), true)
+  assert.equal(textIncludes(flow.panelTree, 'temporary failure'), true)
+  activeRouter = defaultRouter
+  click(findButton(flow.panelTree, EN['panel.retry']))
+  await settle(flow.panelRoot)
+  assert.deepEqual(enhanceCalls().at(-1).body.answers, expectedAnswers)
+  assert.equal(enhanceCalls().at(-1).body.attachments[0].name, 'slides.pdf')
+  unmount(flow.buttonRoot)
+  unmount(flow.panelRoot)
+})
+
+test('late responses cannot replace a newer result even if transport ignores abort', async () => {
+  const originalFetch = globalThis.fetch
+  let finishOld
+  let requests = 0
+  globalThis.fetch = (url, options) => {
+    if (url !== '/api/prompt-craft/enhance') return originalFetch(url, options)
+    requests += 1
+    const response = (text) => ({ ok: true, protocolVersion: 2, status: 'ready', json: async () => ({ ok: true, protocolVersion: 2, status: 'ready', candidates: [{ id: 'clear', text }] }) })
+    if (requests === 1) return new Promise((resolve) => { finishOld = () => resolve(response('old response')) })
+    return Promise.resolve(response('new response'))
+  }
+  const input = makeInput({ draft: 'Summarise the report' })
+  const props = composerProps('response-race', input)
+  const button = createRoot(Button, props)
+  const panel = createRoot(Panel, props)
+  try {
+    click(await settle(button))
+    click(await settle(button))
+    click(await settle(button))
+    await settle(panel)
+    assert.equal(textIncludes(panel.tree, 'new response'), true)
+    finishOld()
+    await settle(panel)
+    assert.equal(textIncludes(panel.tree, 'new response'), true)
+    assert.equal(textIncludes(panel.tree, 'old response'), false)
+  } finally { globalThis.fetch = originalFetch; unmount(button); unmount(panel) }
+})
+
+test('copy feedback waits for clipboard success and reports rejection', async () => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'navigator')
+  let finishCopy
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { clipboard: { writeText: () => new Promise((resolve) => { finishCopy = resolve }) } } })
+  const flow = await craft('clipboard-feedback', makeInput({ draft: 'Summarise the report' }), makeInsertActions())
+  try {
+    click(findButton(flow.panelTree, EN['card.copy']))
+    await settle(flow.panelRoot)
+    assert.equal(findButton(flow.panelTree, EN['card.copied']), null)
+    finishCopy()
+    await settle(flow.panelRoot)
+    assert.ok(findButton(flow.panelTree, EN['card.copied']))
+    navigator.clipboard.writeText = async () => { throw new Error('denied') }
+    click(findButton(flow.panelTree, EN['card.copied']))
+    await settle(flow.panelRoot)
+    assert.equal(textIncludes(flow.panelTree, EN['panel.copyFailed']), true)
+  } finally {
+    if (descriptor) Object.defineProperty(globalThis, 'navigator', descriptor)
+    else delete globalThis.navigator
+    unmount(flow.buttonRoot); unmount(flow.panelRoot)
+  }
+})
+
+function freshClient() {
+  const registrations = []
+  const cleanup = []
+  const fresh = definition.factory((name) => {
+    if (name === 'react') return React
+    throw new Error('unavailable module')
+  })
+  fresh.apply({ ...ctx, slots: { inject: (name, callback) => callback(), register: (options, component) => { registrations.push({ options, component }); return () => {} } }, effect: (callback) => { const dispose = callback(); if (typeof dispose === 'function') cleanup.push(dispose); return dispose } })
+  return { Button: registrations.find((entry) => entry.options.name === 'conversation.input.right').component, Panel: registrations.find((entry) => entry.options.name === 'conversation.input.overlay').component, dispose: () => cleanup.reverse().forEach((dispose) => dispose()) }
+}
+
+test('refresh restores results, rebinds revisions, and applying deletes the cache', async () => {
+  const previous = globalThis.sessionStorage
+  const values = new Map()
+  globalThis.sessionStorage = { getItem: (key) => values.get(key) ?? null, setItem: (key, value) => values.set(key, value) }
+  const input = makeInput({ draft: 'Summarise the report' })
+  const flow = await craft('cache-refresh', input, makeInsertActions())
+  const fresh = freshClient()
+  const actions = makeInsertActions({ startRev: 99 })
+  const restored = createRoot(fresh.Panel, composerProps('cache-refresh', input, actions))
+  try {
+    await settle(restored)
+    assert.equal(textIncludes(restored.tree, SUCCESS_PAYLOAD.candidates[0].text), true)
+    click(findButton(restored.tree, EN['card.apply']))
+    await settle(restored)
+    assert.equal(actions.calls[0].draftRev, 99)
+    assert.equal(restored.tree,null)
+    assert.equal(JSON.parse([...values.values()][0]).length, 0)
+  } finally { unmount(restored); fresh.dispose(); unmount(flow.buttonRoot); unmount(flow.panelRoot); globalThis.sessionStorage = previous }
+})
+
+test('applying clears only its session and the next craft starts from the applied draft',async()=>{
+  const previous=globalThis.sessionStorage,values=new Map()
+  globalThis.sessionStorage={getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,value)}
+  const input=makeInput({draft:'Summarise the report'}),actions=makeInsertActions()
+  const first=await craft('apply-close-primary',input,actions)
+  const second=await craft('apply-close-other',makeInput({draft:'Write a note'}),makeInsertActions())
+  let fresh,restored
+  try {
+    click(findButton(first.panelTree,EN['card.apply']));await settle(first.panelRoot)
+    assert.equal(first.panelTree,null)
+    assert.deepEqual(JSON.parse([...values.values()][0]).map(x=>x.key),['apply-close-other'])
+    fresh=freshClient();restored=createRoot(fresh.Panel,first.props)
+    assert.equal(await settle(restored),null)
+    await settle(second.panelRoot);assert.ok(findButton(second.panelTree,EN['card.apply']))
+    input.state.draft=SUCCESS_PAYLOAD.candidates[0].text;input.state.draftRev=actions.revision
+    click(await settle(first.buttonRoot));await settle(first.panelRoot)
+    const body=enhanceCalls().at(-1).body
+    assert.equal(body.draft,input.state.draft);assert.equal(body.revise,undefined);assert.equal(body.answers,undefined)
+    assert.deepEqual(body.revisionContext,{versions:[],improvements:[]})
+  } finally {
+    unmount(first.buttonRoot);unmount(first.panelRoot);unmount(second.buttonRoot);unmount(second.panelRoot)
+    if(restored)unmount(restored);fresh?.dispose();globalThis.sessionStorage=previous
+  }
+})
+
+test('legacy applied summary caches are discarded without losing another preview',async()=>{
+  const previous=globalThis.sessionStorage,values=new Map()
+  globalThis.sessionStorage={getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,value)}
+  const input=makeInput({draft:'Summarise the report'})
+  const flow=await craft('legacy-applied-summary',input,makeInsertActions())
+  let fresh,legacy,other
+  try {
+    const key=[...values.keys()][0],entries=JSON.parse(values.get(key))
+    const stored=entries.find(x=>x.key==='legacy-applied-summary')
+    entries.push({key:'legacy-unapplied-preview',task:{...stored.task}})
+    stored.task.applied={text:'Applied result',candidateText:'Applied result',rev:5};stored.task.collapsed=true
+    values.set(key,JSON.stringify(entries))
+    fresh=freshClient();legacy=createRoot(fresh.Panel,composerProps('legacy-applied-summary',input))
+    assert.equal(await settle(legacy),null)
+    other=createRoot(fresh.Panel,composerProps('legacy-unapplied-preview',input));await settle(other)
+    assert.ok(findButton(other.tree,EN['card.apply']))
+    assert.deepEqual(JSON.parse(values.get(key)).map(x=>x.key),['legacy-unapplied-preview'])
+  } finally {
+    if(legacy)unmount(legacy);if(other)unmount(other);fresh?.dispose();unmount(flow.buttonRoot);unmount(flow.panelRoot);globalThis.sessionStorage=previous
+  }
+})
+
+test('a restored result refuses a different draft and unavailable storage does not break crafting', async () => {
+  const previous = globalThis.sessionStorage
+  const values = new Map()
+  globalThis.sessionStorage = { getItem: (key) => values.get(key) ?? null, setItem: (key, value) => values.set(key, value) }
+  const flow = await craft('cache-stale', makeInput({ draft: 'Summarise the report' }), makeInsertActions())
+  const fresh = freshClient()
+  const root = createRoot(fresh.Panel, composerProps('cache-stale', makeInput({ draft: 'Different draft' })))
+  try {
+    await settle(root)
+    assert.ok(findButton(root.tree, EN['panel.staleApply']))
+    globalThis.sessionStorage = { getItem() { throw new Error('denied') }, setItem() { throw new Error('denied') } }
+    const working = await craft('cache-denied', makeInput({ draft: 'Summarise the report' }), makeInsertActions())
+    assert.equal(working.panelTree.props['data-phase'], 'ready')
+    unmount(working.buttonRoot); unmount(working.panelRoot)
+  } finally { unmount(root); fresh.dispose(); unmount(flow.buttonRoot); unmount(flow.panelRoot); globalThis.sessionStorage = previous }
+})
+
+test('saving highlight preferences updates an already-open result', async () => {
+  resetRoutes((request) => request.url.split('?')[0] === '/api/prompt-craft/settings'
+    ? { status: 200, body: { ok: true, protocolVersion: 2, status: 'ready', values: settingsValues(request.method === 'POST' ? request.body : { showDiff: false }), catalog: CATALOG } }
+    : defaultRouter(request))
+  const settings = createRoot(Settings, {})
+  await settle(settings)
+  const flow = await craft('preference-live', makeInput({ draft: 'Summarise the report' }), makeInsertActions(), activeRouter)
+  assert.equal(findNodes(flow.panelTree, (node) => node.props?.className === 'pc-card-text pc-diff').length, 0)
+  click(findNodes(settings.tree, (node) => node.props?.['aria-label'] === EN['settings.showDiff.title'])[0])
+  await settle(settings)
+  click(findButton(settings.tree, EN['settings.save']))
+  await settle(settings)
+  await settle(flow.panelRoot)
+  assert.equal(findNodes(flow.panelTree, (node) => node.props?.className === 'pc-card-text pc-diff').length, 1)
+  unmount(settings); unmount(flow.buttonRoot); unmount(flow.panelRoot)
+})
+
+test('the client watchdog terminates a stalled request and unloading aborts active work', async () => {
+  const originalSet = globalThis.setTimeout
+  const originalClear = globalThis.clearTimeout
+  const pending = []
+  globalThis.setTimeout = (callback, delay, ...args) => {
+    if (delay > 10000) { const handle = { callback, active: true, unref() {} }; pending.push(handle); return handle }
+    return originalSet(callback, delay, ...args)
+  }
+  globalThis.clearTimeout = (handle) => handle?.callback ? (handle.active = false) : originalClear(handle)
+  let signal
+  resetRoutes((request) => {
+    if (request.url === '/api/prompt-craft/enhance') { signal = request.options.signal; return new Promise(() => {}) }
+    return defaultRouter(request)
+  })
+  const fresh = freshClient()
+  const props = composerProps('client-watchdog', makeInput({ draft: 'Summarise the report' }))
+  const button = createRoot(fresh.Button, props)
+  const panel = createRoot(fresh.Panel, props)
+  try {
+    click(await settle(button))
+    await settle(panel)
+    pending.findLast((timer) => timer.active).callback()
+    await settle(panel)
+    assert.equal(textIncludes(panel.tree, EN['error.timeout']), true)
+    assert.equal(signal.aborted, true)
+    click(findButton(panel.tree, EN['panel.retry']))
+    await settle(panel)
+    const nextSignal = signal
+    fresh.dispose()
+    assert.equal(nextSignal.aborted, true)
+    assert.equal(pending.some((timer) => timer.active), false)
+  } finally { unmount(button); unmount(panel); globalThis.setTimeout = originalSet; globalThis.clearTimeout = originalClear }
+})
+
+test('the temporary result cache evicts old sessions after twenty entries', async () => {
+  const previous = globalThis.sessionStorage
+  const values = new Map()
+  globalThis.sessionStorage = { getItem: (key) => values.get(key) ?? null, setItem: (key, value) => values.set(key, value) }
+  try {
+    for (let index = 0; index < 21; index += 1) {
+      const flow = await craft(`cache-limit-${index}`, makeInput({ draft: 'Summarise the report' }), makeInsertActions())
+      unmount(flow.buttonRoot); unmount(flow.panelRoot)
+    }
+    const entries = JSON.parse([...values.values()][0])
+    assert.equal(entries.length, 20)
+    assert.equal(entries.some((entry) => entry.key === 'cache-limit-0'), false)
+    assert.equal(entries.at(-1).key, 'cache-limit-20')
+  } finally { globalThis.sessionStorage = previous }
+})
+
+test('unchanged candidates explain that the original prompt was preserved', async () => {
+  resetRoutes((request) => request.url.endsWith('/enhance') ? { status: 200, body: { ...SUCCESS_PAYLOAD, questions: [], meta: { ...SUCCESS_PAYLOAD.meta, unchanged: true } } } : defaultRouter(request))
+  const props = composerProps('preserved-notice', makeInput({ draft: 'Explain closures.' }), makeInsertActions())
+  const button = createRoot(Button, props)
+  const panel = createRoot(Panel, props)
+  await settle(button); await settle(panel)
+  click(findButton(button.tree, EN['button.idle']))
+  await settle(button); await settle(panel)
+  assert.equal(textIncludes(panel.tree, EN['panel.unchanged']), true)
+  unmount(button); unmount(panel)
+})
+
+test('both cancellation controls restore the previous successful candidate', async () => {
+  for (const which of [0, 1]) {
+    let requests = 0
+    const router = (request) => {
+      if (request.url === '/api/prompt-craft/enhance' && ++requests > 1) return new Promise(() => {})
+      return defaultRouter(request)
+    }
+    const flow = await craft('cancel-preserve-' + which, makeInput({ draft: 'Summarise the report' }), makeInsertActions(), router)
+    click(flow.buttonTree)
+    const running = await settle(flow.panelRoot)
+    const controls = findNodes(running, node => node.type === 'button' && (textContent(node) === EN['panel.cancel'] || node.props['aria-label'] === EN['panel.cancel']))
+    assert.equal(controls.length, 2)
+    click(controls[which])
+    await settle(flow.panelRoot)
+    assert.equal(textIncludes(flow.panelTree, SUCCESS_PAYLOAD.candidates[0].text), true)
+    assert.equal(flow.panelTree.props['data-phase'], 'ready')
+    unmount(flow.buttonRoot); unmount(flow.panelRoot)
+  }
+})
+
+test('reading geometry stays within narrow, short and shifted visual viewports', () => {
+  const { panelGeometry } = internals
+  const desktop = panelGeometry({ top: 700, left: 300, width: 900 }, { width: 1440, height: 1000 })
+  assert.equal(desktop.expanded, false)
+  assert.equal(desktop.style.width, 860)
+  assert.ok(desktop.style.maxHeight <= 620)
+  const hero = panelGeometry({ top: 180, left: 20, width: 350 }, { width: 390, height: 700 })
+  assert.equal(hero.expanded, true)
+  assert.equal(hero.style.width, 366)
+  assert.equal(hero.style.height, 588)
+  const compact = panelGeometry({ top: 180, left: 20, width: 350 }, { width: 390, height: 700 }, false)
+  assert.equal(compact.expanded, false)
+  for (const width of [390, 768, 1440]) for (const height of [320, 700, 1000]) {
+    for (const expanded of [undefined, false, true]) {
+      const result = panelGeometry({ top: height * .3, left: 25, width: 860 }, { width, height }, expanded).style
+      assert.ok(result.left >= 12)
+      assert.ok(result.left + result.width <= width - 12)
+      assert.ok(result.bottom >= 12)
+      assert.ok(result.bottom + result.maxHeight <= height - 12 + .001)
+    }
+  }
+  const keyboard = panelGeometry({ top: 480, left: 20, width: 350 }, { width: 390, height: 320, top: 140 }, true)
+  assert.ok(keyboard.style.top >= 152)
+  assert.ok(keyboard.style.top + keyboard.style.maxHeight <= 448)
+})
+
+test('reading mode and original visibility belong to each session and reset after close', async () => {
+  const first = await craft('view-first', makeInput({ draft: 'First draft' }), makeInsertActions())
+  click(findButton(first.panelTree, EN['panel.read']))
+  click(findButton(first.panelTree, EN['card.showOriginal']))
+  await settle(first.panelRoot)
+  assert.equal(first.panelTree.props['data-reading'], 'expanded')
+  assert.ok(textIncludes(first.panelTree, 'First draft'))
+  const second = await craft('view-second', makeInput({ draft: 'Second draft' }), makeInsertActions())
+  assert.equal(second.panelTree.props['data-reading'], 'compact')
+  assert.equal(findNodes(second.panelTree, node => node.props?.className === 'pc-original').length, 0)
+  const firstProps = first.panelRoot.props
+  first.panelRoot.props = second.panelRoot.props
+  await settle(first.panelRoot)
+  assert.equal(first.panelTree.props['data-reading'], 'compact')
+  first.panelRoot.props = firstProps
+  await settle(first.panelRoot)
+  assert.equal(first.panelTree.props['data-reading'], 'expanded')
+  assert.ok(findButton(first.panelTree, EN['card.hideOriginal']))
+  click(findButton(first.panelTree, EN['panel.compact']))
+  await settle(first.panelRoot)
+  assert.equal(first.panelTree.props['data-reading'], 'compact')
+  click(findButton(first.panelTree, EN['panel.close']))
+  await settle(first.panelRoot); await settle(first.buttonRoot)
+  click(first.buttonTree)
+  await settle(first.panelRoot)
+  assert.equal(findNodes(first.panelTree, node => node.props?.className === 'pc-original').length, 0)
+  for (const flow of [first, second]) { unmount(flow.buttonRoot); unmount(flow.panelRoot) }
+})
+
+test('optional questions preserve typed answers when folded and reopen on a new result', async () => {
+  const flow = await craft('fold-questions', makeInput({ draft: 'Summarise the report' }), makeInsertActions())
+  const input = findNodes(flow.panelTree, node => node.type === 'input')[0]
+  input.props.onChange({ target: { value: 'custom.md' } })
+  click(findButton(flow.panelTree, EN['panel.questionsTitle']))
+  await settle(flow.panelRoot)
+  assert.equal(findNodes(flow.panelTree, node => node.type === 'input').length, 0)
+  click(findButton(flow.panelTree, EN['panel.questionsTitle']))
+  await settle(flow.panelRoot)
+  assert.equal(findNodes(flow.panelTree, node => node.type === 'input')[0].props.value, 'custom.md')
+  click(findButton(flow.panelTree, EN['panel.questionsTitle']))
+  await settle(flow.panelRoot)
+  click(flow.buttonTree)
+  await settle(flow.panelRoot)
+  assert.equal(findButton(flow.panelTree, EN['panel.questionsTitle']).props['aria-expanded'], true)
+  unmount(flow.buttonRoot); unmount(flow.panelRoot)
+})
+
+test('regeneration displays the previous text and prevents applying it until cancellation', async () => {
+  let count = 0
+  const router = request => request.url.endsWith('/enhance') && ++count > 1 ? new Promise(() => {}) : defaultRouter(request)
+  const actions = makeInsertActions()
+  const flow = await craft('visible-previous', makeInput({ draft: 'Summarise the report' }), actions, router)
+  const capturedApply = findButton(flow.panelTree, EN['card.apply'])
+  click(flow.buttonTree)
+  const running = await settle(flow.panelRoot)
+  assert.ok(textIncludes(running, SUCCESS_PAYLOAD.candidates[0].text))
+  assert.equal(findButton(running, EN['card.apply']).props.disabled, true)
+  assert.equal(findButton(running, EN['card.shorter']).props.disabled, true)
+  click(capturedApply)
+  assert.equal(actions.calls.length, 0)
+  click(findButton(running, EN['panel.cancel']))
+  await settle(flow.panelRoot)
+  assert.equal(findButton(flow.panelTree, EN['card.apply']).props.disabled, false)
+  unmount(flow.buttonRoot); unmount(flow.panelRoot)
+})
+
+test('Escape leaves expanded reading first and then closes the compact result', async () => {
+  const handlers = new Map()
+  const previous = globalThis.document
+  globalThis.document = { addEventListener: (name, handler) => handlers.set(name, handler), removeEventListener: (name, handler) => { if (handlers.get(name) === handler) handlers.delete(name) } }
+  let flow
+  try {
+    flow = await craft('escape-reading', makeInput({ draft: 'Summarise the report' }), makeInsertActions())
+    click(findButton(flow.panelTree, EN['panel.read']))
+    await settle(flow.panelRoot)
+    handlers.get('keydown')({ key: 'Escape', preventDefault() {} })
+    await settle(flow.panelRoot)
+    assert.equal(flow.panelTree.props['data-reading'], 'compact')
+    handlers.get('keydown')({ key: 'Escape', preventDefault() {} })
+    await settle(flow.panelRoot)
+    assert.equal(flow.panelTree, null)
+  } finally {
+    if (flow) { unmount(flow.buttonRoot); unmount(flow.panelRoot) }
+    if (previous === undefined) delete globalThis.document
+    else globalThis.document = previous
+  }
+})
+
+test('settings groups preferences, preview and model with a live character count', async () => {
+  resetRoutes()
+  const root = createRoot(Settings, {})
+  const tree = await settle(root)
+  assert.equal(findNodes(tree, node => node.props?.className === 'pc-settings-group').length, 3)
+  const textarea = findNodes(tree, node => node.type === 'textarea')[0]
+  textarea.props.onChange({ target: { value: 'Prefer concise wording' } })
+  await settle(root)
+  assert.ok(textIncludes(root.tree, '22 / 2000'))
+  assert.equal(textarea.props['aria-label'], EN['settings.preferences.title'])
+  unmount(root)
+})
+
+// v2 lifecycle: terminal success and waiting for answers are separate states.
+const v2 = (status, extra = {}) => ({ ok: true, protocolVersion: 2, status, reason: 'A concrete explanation', candidates: [], questions: [], changes: [], meta: {}, ...extra })
+const readyV2 = text => v2('ready', { candidates: [{ id: 'clear', label: 'Clear', text }], changes: [{ id: 'i1', summary: text }] })
+function fillAnswer(tree, value, index = 0) {
+  const fields = findNodes(tree, node => node.props?.className === 'pc-answer-input')
+  fields[index].props.onChange({ target: { value } })
+}
+
+test('v2 questions-only results accumulate answers and resume a revision after a new question', async () => {
+  let index = 0
+  const replies = [v2('needs_input', { questions: [{ q: 'Audience?' }] }), v2('needs_input', { questions: [{ q: 'Purpose?' }] }), readyV2('Write a clear note for the team.'), v2('needs_input', { questions: [{ q: 'Tone?' }] }), readyV2('Write a concise, friendly note for the team.')]
+  const router = req => req.url.endsWith('/enhance') ? { body: replies[index++] } : defaultRouter(req)
+  const flow = await craft('v2-multiround', makeInput({ draft: 'Write a note' }), makeInsertActions(), router)
+  assert.equal(flow.panelTree.props['data-status'], 'needs_input')
+  assert.equal(findNodes(flow.panelTree, n => n.type === 'article').length, 0)
+  assert.equal(findButton(flow.panelTree, EN['panel.questionsSubmit']).props.disabled, true)
+  fillAnswer(flow.panelTree, 'Team'); await settle(flow.panelRoot)
+  click(findButton(flow.panelTree, EN['panel.questionsSubmit'])); await settle(flow.panelRoot)
+  fillAnswer(flow.panelTree, 'Meeting'); await settle(flow.panelRoot)
+  click(findButton(flow.panelTree, EN['panel.questionsSubmit'])); await settle(flow.panelRoot)
+  assert.deepEqual(enhanceCalls().at(-1).body.answers, [{q:'Audience?',a:'Team'},{q:'Purpose?',a:'Meeting'}])
+  click(findButton(flow.panelTree, EN['card.specific'])); await settle(flow.panelRoot)
+  assert.equal(flow.panelTree.props['data-status'],'needs_input')
+  assert.equal(findButton(flow.panelTree, EN['card.apply']).props.disabled,true)
+  fillAnswer(flow.panelTree, 'Friendly'); await settle(flow.panelRoot)
+  click(findButton(flow.panelTree, EN['panel.questionsSubmit'])); await settle(flow.panelRoot)
+  const last=enhanceCalls().at(-1).body
+  assert.equal(last.revise.instruction,'specific');assert.equal(last.revise.text,'Write a clear note for the team.')
+  assert.equal(last.answers.length,3);assert.equal(last.draft,'Write a note')
+  unmount(flow.buttonRoot);unmount(flow.panelRoot)
+})
+
+test('five specificity revisions carry bounded history, stop at exhaustion and unlock after new information', async () => {
+  let index=0
+  const router=req=>{
+    if(!req.url.endsWith('/enhance'))return defaultRouter(req)
+    index++
+    return {body:index===6?v2('unchanged',{candidates:[{id:'clear',text:'Version 5'}],meta:{specificExhausted:true,unchanged:true}}):readyV2('Version '+index)}
+  }
+  const flow=await craft('v2-five',makeInput({draft:'Plan this task'}),makeInsertActions(),router)
+  for(let i=0;i<5;i++){
+    const button=findButton(flow.panelTree,EN['card.specific']);assert.equal(button.props.disabled,false)
+    click(button);await settle(flow.panelRoot)
+  }
+  assert.equal(enhanceCalls().length,6)
+  assert.equal(findButton(flow.panelTree,EN['card.specific']).props.disabled,true)
+  assert.ok(enhanceCalls().every(c=>(c.body.revisionContext?.versions.length??0)<=3))
+  assert.equal(enhanceCalls().at(-1).body.revisionContext.improvements.length,5)
+  click(findButton(flow.panelTree,EN['panel.addInformation']));await settle(flow.panelRoot)
+  fillAnswer(flow.panelTree,'Focus on clarity');await settle(flow.panelRoot)
+  click(findButton(flow.panelTree,EN['panel.questionsSubmit']));await settle(flow.panelRoot)
+  assert.equal(findButton(flow.panelTree,EN['card.specific']).props.disabled,false)
+  assert.equal(enhanceCalls().at(-1).body.answers[0].a,'Focus on clarity')
+  unmount(flow.buttonRoot);unmount(flow.panelRoot)
+})
+
+test('v2 continue with known information dispatches explicitly without clearing prior answers', async () => {
+  let count=0
+  const flow=await craft('v2-proceed',makeInput({draft:'Write a note'}),makeInsertActions(),req=>req.url.endsWith('/enhance')?{body:++count===1?v2('needs_input',{questions:[{q:'Audience?'}]}):readyV2('Write a clear note.')} : defaultRouter(req))
+  fillAnswer(flow.panelTree,'Team');await settle(flow.panelRoot)
+  click(findButton(flow.panelTree,EN['panel.questionsIgnore']));await settle(flow.panelRoot)
+  assert.equal(enhanceCalls().at(-1).body.clarificationMode,'proceed')
+  assert.deepEqual(enhanceCalls().at(-1).body.answers,[{q:'Audience?',a:'Team'}])
+  unmount(flow.buttonRoot);unmount(flow.panelRoot)
+})
+
+test('v2 blocked revision keeps the current candidate and shows the reason', async () => {
+  let count=0
+  const flow=await craft('v2-blocked',makeInput({draft:'Explain this'}),makeInsertActions(),req=>req.url.endsWith('/enhance')?{body:++count===1?readyV2('Explain the supplied example.'):v2('blocked',{reason:'Repeated additions were rejected.'})}:defaultRouter(req))
+  click(findButton(flow.panelTree,EN['card.specific']));await settle(flow.panelRoot)
+  assert.equal(flow.panelTree.props['data-status'],'blocked')
+  assert.equal(textIncludes(flow.panelTree,'Explain the supplied example.'),true)
+  assert.equal(textIncludes(flow.panelTree,'Repeated additions were rejected.'),true)
+  unmount(flow.buttonRoot);unmount(flow.panelRoot)
+})
+
+test('external draft or attachment edits reset answers and revision history before refining', async () => {
+  for(const change of ['draft','attachments']){
+    const input=makeInput({draft:'Write a note'})
+    const flow=await craft('v2-reset-'+change,input,makeInsertActions(),req=>req.url.endsWith('/enhance')?{body:readyV2('Write a clear note.')}:defaultRouter(req))
+    if(change==='draft')input.state.draft='Explain closure'
+    else input.state.attachmentIds=['new-file']
+    await settle(flow.panelRoot)
+    click(findButton(flow.panelTree,EN['card.specific']));await settle(flow.panelRoot)
+    const body=enhanceCalls().at(-1).body
+    assert.equal(body.revise,undefined);assert.equal(body.answers,undefined);assert.deepEqual(body.revisionContext,{versions:[],improvements:[]})
+    unmount(flow.buttonRoot);unmount(flow.panelRoot)
+  }
+})
+
+test('v2 refresh restores questions, typed answers and pending revision state without a candidate', async () => {
+  const previous=globalThis.sessionStorage,values=new Map()
+  globalThis.sessionStorage={getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,value)}
+  let fresh,restored
+  const input=makeInput({draft:'Write a note'})
+  const flow=await craft('v2-question-cache',input,makeInsertActions(),req=>req.url.endsWith('/enhance')?{body:v2('needs_input',{questions:[{q:'Audience?'}]})}:defaultRouter(req))
+  try{
+    fillAnswer(flow.panelTree,'Team');await settle(flow.panelRoot)
+    fresh=freshClient();restored=createRoot(fresh.Panel,composerProps('v2-question-cache',input))
+    await settle(restored)
+    assert.equal(restored.tree.props['data-status'],'needs_input')
+    assert.equal(findNodes(restored.tree,n=>n.props?.className==='pc-answer-input')[0].props.value,'Team')
+    assert.ok([...values.keys()].every(key=>key.endsWith(':v2')))
+  }finally{unmount(flow.buttonRoot);unmount(flow.panelRoot);if(restored)unmount(restored);fresh?.dispose();globalThis.sessionStorage=previous}
+})
+
+const imageData='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aF1sAAAAASUVORK5CYII='
+function registerImage(id,extra={}) {
+  const file=new File([Buffer.from(imageData,'base64')],'same.png',{type:'image/png'})
+  draftRegistry.set(id,{id,kind:'image',file,...extra});return draftRegistry.get(id)
+}
+function imageRouter(request) {
+  const result=defaultRouter(request)
+  if(request.url.includes('/settings'))result.body.capabilities={draftImages:true}
+  else result.body={...readyV2('Explain the supplied screenshot and identify the relevant evidence.'),meta:{model:'vision',imagesUsed:request.body.images?.length??0}}
+  return result
+}
+test('image-only composers send image bytes and preserve ordered duplicate filenames',async()=>{
+  registerImage('img-a');registerImage('img-b')
+  const flow=await craft('image-only',makeInput({attachmentIds:['img-a','img-b']}),makeInsertActions(),imageRouter)
+  const body=enhanceCalls().at(-1).body
+  assert.equal(body.draft,'');assert.deepEqual(body.images.map(x=>[x.index,x.name,x.data]),[[1,'same.png',imageData],[2,'same.png',imageData]])
+  assert.equal(body.attachments.length,2);assert.ok(body.attachments.every(x=>x.kind==='image'))
+  assert.equal(textIncludes(flow.panelTree,'Referenced 2 image(s)'),true)
+  unmount(flow.buttonRoot);unmount(flow.panelRoot)
+})
+test('mixed file and image references keep input order and do not read file content',async()=>{
+  registerImage('mixed-image')
+  const flow=await craft('image-mixed',makeInput({draft:'Explain this',attachmentIds:['file-a','mixed-image']}),makeInsertActions(),imageRouter)
+  const body=enhanceCalls().at(-1).body;assert.equal(body.images[0].index,2);assert.equal(body.attachments[0].kind,'file');assert.equal(body.attachments[1].kind,'image')
+  unmount(flow.buttonRoot);unmount(flow.panelRoot)
+})
+test('legacy hosts cannot silently ignore supplied images',async()=>{
+  registerImage('old-host-image')
+  const flow=await craft('image-old-host',makeInput({draft:'Explain this',attachmentIds:['old-host-image']}),makeInsertActions(),defaultRouter)
+  assert.equal(enhanceCalls().length,0);assert.equal(textIncludes(flow.panelTree,EN['error.outdated']),true)
+  unmount(flow.buttonRoot);unmount(flow.panelRoot)
+})
+test('unavailable draft attachments show an error without a text-only model request',async()=>{
+  const flow=await craft('image-missing',makeInput({draft:'Explain this',attachmentIds:['unavailable-image']}),makeInsertActions(),imageRouter)
+  assert.equal(enhanceCalls().length,0);assert.equal(textIncludes(flow.panelTree,EN['error.imagesUnavailable']),true)
+  unmount(flow.buttonRoot);unmount(flow.panelRoot)
+})
+test('invalid type, size and failed image reads never send model requests',async()=>{
+  for(const [suffix,file,error] of [
+    ['type',{name:'bad.svg',size:10,type:'image/svg+xml'},'error.imageLimits'],
+    ['size',{name:'large.png',size:11*1024*1024,type:'image/png'},'error.imageLimits'],
+    ['read',{name:'bad.png',size:10,type:'image/png',arrayBuffer:async()=>{throw Error('secret')}},'error.imageRead'],
+  ]){
+    registerImage('bad-'+suffix,{file})
+    const flow=await craft('image-'+suffix,makeInput({draft:'Explain',attachmentIds:['bad-'+suffix]}),makeInsertActions(),imageRouter)
+    assert.equal(enhanceCalls().length,0);assert.equal(textIncludes(flow.panelTree,EN[error]),true)
+    unmount(flow.buttonRoot);unmount(flow.panelRoot)
+  }
+})
+test('cancellation while reading a file prevents sending its eventual bytes',async()=>{
+  let finish
+  registerImage('pending-img',{file:{name:'pending.png',size:1,type:'image/png',arrayBuffer:()=>new Promise(resolve=>{finish=()=>resolve(Uint8Array.of(1).buffer)})}})
+  resetRoutes(imageRouter)
+  const input=makeInput({draft:'Explain',attachmentIds:['pending-img']}),props=composerProps('image-read-cancel',input),button=createRoot(Button,props),panel=createRoot(Panel,props)
+  click(await settle(button));await settle(panel);assert.equal(typeof finish,'function')
+  click(await settle(button));finish();await settle(panel);assert.equal(enhanceCalls().length,0)
+  unmount(button);unmount(panel)
+})
+test('image replacement during reading invalidates the request before transmission',async()=>{
+  let finish
+  registerImage('reading-img',{file:{name:'pending.png',size:1,type:'image/png',arrayBuffer:()=>new Promise(resolve=>{finish=()=>resolve(Uint8Array.of(1).buffer)})}})
+  resetRoutes(imageRouter)
+  const input=makeInput({draft:'Explain',attachmentIds:['reading-img']}),props=composerProps('image-read-race',input),button=createRoot(Button,props),panel=createRoot(Panel,props)
+  click(await settle(button));await settle(panel)
+  registerImage('reading-img');await settle(panel);finish();await settle(panel)
+  assert.equal(enhanceCalls().length,0);assert.equal(textIncludes(panel.tree,EN['error.imageStale']),true)
+  unmount(button);unmount(panel)
+})
+test('image edits during inference cannot install a late candidate',async()=>{
+  registerImage('late-img');let finish
+  const flow=await craft('image-late',makeInput({draft:'Explain',attachmentIds:['late-img']}),makeInsertActions(),request=>request.url.endsWith('/enhance')?new Promise(resolve=>{finish=()=>resolve(imageRouter(request))}):imageRouter(request))
+  registerImage('late-img');finish();await settle(flow.panelRoot)
+  assert.equal(textIncludes(flow.panelTree,EN['error.imageStale']),true);assert.equal(findButton(flow.panelTree,EN['card.apply']),null)
+  unmount(flow.buttonRoot);unmount(flow.panelRoot)
+})
+test('refining rereads images, keeps their references and applying preserves attachment ids',async()=>{
+  let reads=0
+  const entry=registerImage('refine-img');const read=entry.file.arrayBuffer.bind(entry.file);entry.file.arrayBuffer=()=>{reads++;return read()}
+  const input=makeInput({draft:'Explain this',attachmentIds:['refine-img']}),actions=makeInsertActions()
+  const flow=await craft('image-refine',input,actions,imageRouter)
+  click(findButton(flow.panelTree,EN['card.specific']));await settle(flow.panelRoot)
+  assert.equal(reads,2);assert.equal(enhanceCalls().at(-1).body.images[0].data,imageData)
+  click(findButton(flow.panelTree,EN['card.apply']));await settle(flow.panelRoot)
+  assert.deepEqual(input.state.attachmentIds,['refine-img']);assert.equal(actions.calls.length,1)
+  unmount(flow.buttonRoot);unmount(flow.panelRoot)
+})
+test('image results refresh without caching bytes and refuse applying after images disappear',async()=>{
+  const previous=globalThis.sessionStorage,values=new Map()
+  globalThis.sessionStorage={getItem:key=>values.get(key)??null,setItem:(key,value)=>values.set(key,value)}
+  registerImage('cached-img');let fresh,restored
+  const input=makeInput({draft:'Explain this',attachmentIds:['cached-img']}),actions=makeInsertActions()
+  const flow=await craft('image-cache',input,actions,imageRouter)
+  try {
+    assert.ok(![...values.values()].join('').includes(imageData))
+    fresh=freshClient();draftRegistry.delete('cached-img')
+    restored=createRoot(fresh.Panel,composerProps('image-cache',input,actions));await settle(restored)
+    assert.equal(textIncludes(restored.tree,'Explain the supplied screenshot'),true)
+    assert.equal(textIncludes(restored.tree,EN['panel.staleApply']),true);assert.equal(actions.calls.length,0)
+    const before=enhanceCalls().length
+    click(findButton(restored.tree,EN['card.specific']));await settle(restored)
+    assert.equal(enhanceCalls().length,before)
+    assert.equal(textIncludes(restored.tree,EN['error.imagesUnavailable']),true)
+    assert.equal(textIncludes(restored.tree,'Explain the supplied screenshot'),true)
+  } finally {unmount(flow.buttonRoot);unmount(flow.panelRoot);if(restored)unmount(restored);fresh?.dispose();globalThis.sessionStorage=previous}
 })

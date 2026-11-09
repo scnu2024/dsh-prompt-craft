@@ -2,7 +2,7 @@
  * Browser half of the prompt-craft plugin.
  *
  * Adds a small "craft the prompt" control to the composer toolbar, a preview
- * dock above the composer where two conservative rewrites can be compared and
+ * panel above the composer where a conservative rewrite can be reviewed and
  * applied, and a settings section. Nothing is written into the composer until
  * the user clicks apply; the Host half owns normalisation and quality checks.
  *
@@ -22,13 +22,13 @@ window.__ModuleLoader__.load({
   factory(require) {
     const React = require('react')
     const h = React.createElement
-    const { useEffect, useRef, useState } = React
+    const { useCallback, useEffect, useRef, useState } = React
     /** Measure before the first paint where the runtime supports it. */
     const useMeasureEffect = typeof React.useLayoutEffect === 'function' ? React.useLayoutEffect : useEffect
 
     const NS = 'prompt-craft'
     const BUTTON_SLOT = 'conversation.input.right'
-    const PANEL_SLOT = 'conversation.composer.dock'
+    const PANEL_SLOT = 'conversation.input.overlay'
     const SETTINGS_SLOT = 'settings.section'
     const BUTTON_ID = 'prompt-craft'
     const PANEL_ID = 'prompt-craft-panel'
@@ -39,7 +39,7 @@ window.__ModuleLoader__.load({
     const ENHANCE_PATH = '/api/prompt-craft/enhance'
     const SETTINGS_PATH = '/api/prompt-craft/settings'
     const PREFERENCES_MAX = 2000
-    const ANSWER_MAX = 300
+    const ANSWER_MAX = 500
     const COPY_RESET_MS = 1400
     /** Above this many token pairs the diff falls back to a prefix/suffix scan. */
     const DIFF_PAIR_BUDGET = 250000
@@ -58,6 +58,39 @@ window.__ModuleLoader__.load({
     // ---------------------------------------------------------------------
 
     const en = {
+      'button.label': 'Craft',
+      'button.labelRunning': 'Crafting',
+      'button.labelDone': 'Craft again',
+      'button.labelFailed': 'Retry',
+      'button.questions': 'Confirm details to continue crafting',
+      'button.labelQuestions': 'Confirm details',
+      'panel.subtitle': 'A clearer path from idea to instruction',
+      'panel.changes': 'Improvements in this version',
+      'panel.exhausted': 'No further useful detail without new information.',
+      'panel.addInformation': 'Add information',
+      'panel.newInformation': 'Additional information {round}: what else should this prompt include?',
+      'panel.updateInformation': 'Update and craft',
+      'error.outdated': 'Please refresh Harness to load the updated crafting service.',
+      'error.imagesUnavailable': 'Draft images are unavailable. Reattach the images and refresh Harness if needed.',
+      'error.imageRead': 'Could not read the images. Please reattach them and retry.',
+      'error.imageLimits': 'Use up to 8 PNG, JPEG, WebP or GIF images, at most 10 MiB each and 20 MiB in total.',
+      'error.imageStale': 'The draft or images changed. Craft again using the current composer.',
+      'panel.images': 'Referenced {count} image(s)',
+      'panel.read': 'Expand reading',
+      'panel.compact': 'Return to compact view',
+      'panel.previous': 'Previous version · generating a new one',
+      'panel.questionsToggle': 'Information needed · {count}',
+      'card.original': 'Original draft',
+      'card.showOriginal': 'Compare with original',
+      'card.hideOriginal': 'Hide original',
+      'card.chars': '{before} → {after} characters',
+      'card.highlight': 'Highlight changes',
+      'warning.details': 'View details',
+      'settings.preview.title': 'Context & preview',
+      'settings.modelGroup.title': 'Model',
+      'settings.preferences.count': '{count} / {max}',
+      'settings.preferences.hint': 'Your preferred wording, format and style.',
+      'settings.model.hint': 'Used for crafting only. Follow the conversation or choose a dedicated model.',
       'nav': 'Prompt craft',
       'button.idle': 'Craft the prompt: one clearer version',
       'button.running': 'Crafting the prompt; click to cancel',
@@ -66,27 +99,34 @@ window.__ModuleLoader__.load({
       'panel.title': 'Crafted versions',
       'panel.close': 'Close',
       'panel.expand': 'Expand',
+      'panel.unchanged': 'Current version preserved',
       'panel.running': 'Crafting…',
       'panel.cancel': 'Cancel',
       'panel.retry': 'Retry',
       'panel.summary': 'Crafting finished · {count} version(s)',
       'panel.applied': 'Applied to the composer',
       'panel.refused': 'The composer refused the replacement; the draft is unchanged.',
+      'panel.partial': 'Only part of the replacement was accepted. Use Undo to restore your draft, or copy the candidate.',
+      'panel.copyFailed': 'Copy failed. Select the candidate text and copy it manually.',
+      'panel.waiting': 'Still generating. You can switch conversations and return later.',
+      'panel.duration': 'Generating · {seconds}s',
+      'error.timeout': 'Crafting timed out. Your draft and the previous result are preserved; please retry.',
+      'error.client': 'Crafting encountered an unexpected error. Please retry.',
       'panel.staleApply': 'Draft changed; regenerate',
       'panel.elapsed': '{seconds}s',
       'panel.answerPlaceholder': 'Add an answer…',
-      'panel.questionsTitle': 'A couple of questions (optional, up to 2)',
+      'panel.questionsTitle': 'Confirm the key details',
       'panel.questionsSubmit': 'Regenerate with the answers',
-      'panel.questionsIgnore': 'Ignore',
+      'panel.questionsIgnore': 'Continue with known information',
       'card.apply': 'Use this version',
-      'card.compare': 'Compare with draft',
-      'card.compareOff': 'Hide comparison',
+      'card.compare': 'Highlight changes',
+      'card.compareOff': 'Hide highlights',
       'card.shorter': 'Shorter',
       'card.specific': 'More specific',
       'card.copy': 'Copy',
       'card.copied': 'Copied',
       'card.ratio': '{ratio}x',
-      'warning.invented': 'Includes {count} detail(s) that are not in your draft — please check',
+      'warning.invented': 'Includes {count} detail(s) absent from your draft; please check',
       'warning.template': 'Detected as templated; rewritten once but still not ideal',
       'warning.bloat': 'Longer than your draft',
       'warning.placeholder': 'Contains placeholders',
@@ -117,6 +157,39 @@ window.__ModuleLoader__.load({
     }
 
     const zh = {
+      'error.imagesUnavailable': '无法获取输入框图片，请重新添加图片，必要时刷新 Harness。',
+      'error.imageRead': '图片读取失败，请重新添加图片后重试。',
+      'error.imageLimits': '最多参考 8 张 PNG、JPEG、WebP 或 GIF 图片，单张不超过 10 MiB，总计不超过 20 MiB。',
+      'error.imageStale': '草稿或图片已变化，请基于当前输入框重新打磨。',
+      'panel.images': '已参考 {count} 张图片',
+      'button.label': '打磨',
+      'button.labelRunning': '打磨中',
+      'button.labelDone': '再次打磨',
+      'button.labelFailed': '重试',
+      'button.questions': '先确认信息，再继续打磨',
+      'button.labelQuestions': '待确认',
+      'panel.subtitle': '让想法更清晰，让指令更好执行',
+      'panel.changes': '本轮改进',
+      'panel.exhausted': '当前信息下已无进一步具体化空间。',
+      'panel.addInformation': '补充信息',
+      'panel.newInformation': '补充信息 {round}：还希望这条提示词包含哪些信息？',
+      'panel.updateInformation': '补充后继续打磨',
+      'error.outdated': '请刷新 Harness，加载新版提示词打磨服务。',
+      'panel.read': '展开阅读',
+      'panel.compact': '返回浮层',
+      'panel.previous': '上一版结果 · 新一版正在生成',
+      'panel.questionsToggle': '需要确认 · {count} 项',
+      'card.original': '原始草稿',
+      'card.showOriginal': '对照原文',
+      'card.hideOriginal': '收起原文',
+      'card.chars': '{before} → {after} 字',
+      'card.highlight': '高亮改动',
+      'warning.details': '查看详情',
+      'settings.preview.title': '上下文与预览',
+      'settings.modelGroup.title': '模型',
+      'settings.preferences.count': '{count} / {max}',
+      'settings.preferences.hint': '写下你习惯的措辞、格式和表达风格。',
+      'settings.model.hint': '仅用于提示词打磨，可跟随会话或选择专用模型。',
       'nav': '提示词打磨',
       'button.idle': '打磨提示词：生成一版更清晰的写法',
       'button.running': '正在打磨提示词，点击可取消',
@@ -125,21 +198,28 @@ window.__ModuleLoader__.load({
       'panel.title': '打磨结果',
       'panel.close': '关闭',
       'panel.expand': '展开',
+      'panel.unchanged': '已保留当前版本',
       'panel.running': '正在打磨…',
       'panel.cancel': '取消',
       'panel.retry': '重试',
       'panel.summary': '打磨完成 · {count} 版',
       'panel.applied': '已应用到输入框',
       'panel.refused': '输入框没有接受替换，草稿不变。',
+      'panel.partial': '仅完成了部分替换，请用撤销恢复草稿，或复制候选内容。',
+      'panel.copyFailed': '复制失败，请选中候选文字后手动复制。',
+      'panel.waiting': '仍在生成，可以切换会话，稍后回来查看。',
+      'panel.duration': '正在生成 · {seconds} 秒',
+      'error.timeout': '打磨超时了，草稿和上一版结果已保留，请重试。',
+      'error.client': '打磨遇到异常，请重试。',
       'panel.staleApply': '草稿已改，重新生成',
       'panel.elapsed': '{seconds} 秒',
       'panel.answerPlaceholder': '补充一句…',
-      'panel.questionsTitle': '需要你补一句（可选，≤2 条）',
+      'panel.questionsTitle': '先确认关键信息',
       'panel.questionsSubmit': '带着答案重新生成',
-      'panel.questionsIgnore': '忽略',
-      'card.apply': '用这版',
-      'card.compare': '对比原文',
-      'card.compareOff': '收起对比',
+      'panel.questionsIgnore': '按已有信息继续',
+      'card.apply': '应用结果',
+      'card.compare': '高亮改动',
+      'card.compareOff': '关闭高亮',
       'card.shorter': '再短一点',
       'card.specific': '再具体一点',
       'card.copy': '复制',
@@ -182,308 +262,165 @@ window.__ModuleLoader__.load({
     // ---------------------------------------------------------------------
 
     const css = `
-.pc-btn-root {
+.pc-panel, .pc-settings, .pc-btn-root {
+  --pc-accent: var(--dsw-alias-brand-primary);
+  --pc-tint: color-mix(in srgb, var(--dsw-alias-brand-primary) 8%, var(--dsw-alias-bg-layer-1));
+  --pc-line: var(--dsw-alias-border-l1);
+  --pc-muted: var(--dsw-alias-label-secondary);
+  --pc-surface: var(--dsw-alias-bg-layer-1);
+  --pc-ink: var(--dsw-alias-label-primary);
   box-sizing: border-box;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  height: 26px;
-  min-width: 26px;
-  padding: 0 6px;
-  border: 1px solid transparent;
-  border-radius: 8px;
-  background: transparent;
-  color: var(--dsw-alias-label-secondary);
-  font: inherit;
-  font-size: 12px;
-  line-height: 1;
-  cursor: pointer;
+  color: var(--pc-ink);
+  font-family: inherit;
+  text-align: start;
 }
-.pc-btn-root:hover { background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); }
-.pc-btn-root:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }
-.pc-btn-root[data-state="running"] { color: var(--dsw-alias-brand-primary); cursor: progress; }
+.pc-panel *, .pc-settings * { box-sizing: border-box; }
+.pc-btn-root {
+  display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+  height: 28px; min-width: 28px; padding: 0 10px; border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--pc-accent) 25%, transparent);
+  background: linear-gradient(120deg, var(--pc-tint), var(--pc-surface));
+  color: var(--pc-accent); font: inherit; font-size: 12px; font-weight: 600;
+  cursor: pointer; transition: background 160ms, box-shadow 160ms;
+}
+.pc-btn-root:hover { background: var(--pc-tint); box-shadow: 0 2px 10px color-mix(in srgb, var(--pc-accent) 14%, transparent); }
 .pc-btn-root[data-state="ready"] { color: var(--dsw-alias-state-success-primary); }
 .pc-btn-root[data-state="error"] { color: var(--dsw-alias-state-error-primary); }
-.pc-spin {
-  display: inline-block;
-  width: 13px;
-  height: 13px;
-  border-radius: 999px;
-  border: 1.5px solid currentColor;
-  border-right-color: transparent;
-  animation: pc-spin 0.8s linear infinite;
-}
-.pc-dot { display: inline-block; width: 8px; height: 8px; border-radius: 999px; background: currentColor; }
-.pc-icon { display: block; }
+.pc-icon { display: block; flex: none; }
+.pc-spin { display: inline-block; flex: none; width: 14px; height: 14px; border: 1.5px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: pc-spin .8s linear infinite; }
+.pc-dot { display: inline-block; width: 7px; height: 7px; background: currentColor; border-radius: 50%; }
 .pc-panel {
-  box-sizing: border-box;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin: 0;
-  padding: 10px 12px 12px;
-  max-height: 40vh;
-  overflow: auto;
-  border: 1px solid var(--dsw-alias-border-l1);
-  border-radius: 8px;
-  background: var(--dsw-alias-bg-layer-1);
-  color: var(--dsw-alias-label-primary);
-  font-size: 13px;
-  line-height: 1.5;
+  display: flex; flex-direction: column; min-width: 0; overflow: hidden;
+  border: 1px solid var(--pc-line); border-radius: 14px;
+  background: var(--pc-surface); font-size: 14px; line-height: 1.7;
+  box-shadow: 0 16px 48px color-mix(in srgb, var(--pc-ink) 12%, transparent), 0 2px 8px color-mix(in srgb, var(--pc-ink) 5%, transparent);
+  animation: pc-enter 160ms ease-out;
 }
-.pc-panel-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.pc-panel-title { font-weight: 600; white-space: nowrap; }
-.pc-panel-meta {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 12px;
-  color: var(--dsw-alias-label-secondary);
-  font-variant-numeric: tabular-nums;
+.pc-modal-layer { position: fixed; inset: 0; z-index: 2147483000; background: color-mix(in srgb, var(--dsw-alias-label-primary) 20%, transparent); }
+.pc-panel-head {
+  display: flex; align-items: center; gap: 12px; flex: none; min-width: 0;
+  padding: 16px 20px; border-bottom: 1px solid var(--pc-line);
+  background: linear-gradient(115deg, var(--pc-tint), var(--pc-surface) 75%);
 }
-.pc-panel-head .pc-icon-btn { margin-left: auto; }
+.pc-brand-icon { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 34px; height: 34px; border-radius: 11px; color: var(--pc-accent); background: color-mix(in srgb, var(--pc-accent) 12%, var(--pc-surface)); }
+.pc-heading { flex: 1; min-width: 0; }
+.pc-panel-title { display: block; font-size: 15px; font-weight: 650; line-height: 1.5; }
+.pc-panel-meta { color: var(--pc-muted); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.pc-head-actions { display: flex; gap: 4px; flex: none; }
 .pc-icon-btn {
-  appearance: none;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  border: 0;
-  border-radius: 4px;
-  background: transparent;
-  color: var(--dsw-alias-label-secondary);
-  font: inherit;
-  font-size: 15px;
-  line-height: 1;
-  cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center; flex: none;
+  width: 30px; height: 30px; padding: 0; border: 0; border-radius: 8px;
+  background: transparent; color: var(--pc-muted); font: inherit; font-size: 18px; cursor: pointer;
 }
-.pc-icon-btn:hover { background: var(--dsw-alias-bg-layer-2); color: var(--dsw-alias-label-primary); }
-.pc-icon-btn:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }
-.pc-skeleton { display: flex; flex-direction: column; gap: 6px; padding: 2px 0; }
-.pc-skeleton-bar {
-  display: block;
-  height: 10px;
-  border-radius: 4px;
-  background: var(--dsw-alias-bg-layer-2);
-  animation: pc-breathe 1.4s ease-in-out infinite;
-}
-.pc-skeleton-bar:nth-child(2) { width: 86%; }
-.pc-skeleton-bar:nth-child(3) { width: 64%; }
-.pc-panel-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.pc-icon-btn:hover { background: var(--dsw-alias-bg-layer-2); color: var(--pc-ink); }
+.pc-panel-body { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; padding: 18px 20px; }
+.pc-cards { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+.pc-card { min-width: 0; display: flex; flex-direction: column; gap: 14px; }
+.pc-card + .pc-card { border-top: 1px solid var(--pc-line); padding-top: 18px; }
+.pc-card-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.pc-card-label { font-size: 12px; font-weight: 600; color: var(--pc-muted); }
+.pc-char-count { margin-inline-start: auto; font-size: 12px; color: var(--pc-muted); font-variant-numeric: tabular-nums; }
+.pc-card-tools { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.pc-card-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; line-height: 1.7; tab-size: 4; }
+.pc-add { background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 16%, transparent); color: inherit; border-radius: 3px; padding-block: 1px; box-decoration-break: clone; }
+.pc-original { padding: 12px 14px; background: var(--dsw-alias-bg-layer-2); border: 1px solid var(--pc-line); border-radius: 10px; }
+.pc-original-label { display: block; margin-bottom: 8px; font-size: 12px; font-weight: 600; color: var(--pc-muted); }
+.pc-original .pc-card-text { color: var(--pc-muted); }
 .pc-btn {
-  box-sizing: border-box;
-  height: 26px;
-  padding: 0 10px;
-  border: 1px solid var(--dsw-alias-border-l1);
-  border-radius: 8px;
-  background: var(--dsw-alias-bg-layer-1);
-  color: var(--dsw-alias-label-primary);
-  font: inherit;
-  font-size: 12px;
-  line-height: 1;
-  cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  min-height: 32px; padding: 5px 12px; border: 1px solid var(--pc-line); border-radius: 9px;
+  background: var(--pc-surface); color: var(--pc-ink); font: inherit; font-size: 12px; line-height: 1.5;
+  cursor: pointer; transition: background 140ms, box-shadow 140ms;
 }
-.pc-btn:hover { background: var(--dsw-alias-bg-layer-2); }
-.pc-btn:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }
-.pc-btn:disabled { opacity: 0.55; cursor: default; }
-.pc-btn-primary {
-  border-color: var(--dsw-alias-brand-primary);
-  background: var(--dsw-alias-brand-primary);
-  color: var(--dsw-alias-bg-base);
-}
-.pc-btn-primary:hover { background: var(--dsw-alias-brand-primary); }
-.pc-error,
-.pc-refused {
-  margin: 0;
-  padding: 6px 8px;
-  border-radius: 6px;
-  background: var(--dsw-alias-bg-layer-2);
-  color: var(--dsw-alias-state-error-primary);
-  font-size: 12px;
-}
-.pc-refused { color: var(--dsw-alias-state-warn-primary); }
-.pc-applied { color: var(--dsw-alias-state-success-primary); font-size: 12px; }
-.pc-questions {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 8px;
-  border: 1px solid var(--dsw-alias-border-l1);
-  border-radius: 8px;
-  background: var(--dsw-alias-bg-base);
-}
-.pc-questions-title { margin: 0; font-size: 12px; font-weight: 600; color: var(--dsw-alias-label-secondary); }
-.pc-question { display: flex; flex-direction: column; gap: 4px; }
-.pc-question-row { display: flex; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 6px; }
-.pc-question-row .pc-answer-input { flex: 1 1 200px; min-width: 140px; }
-.pc-question-text { font-size: 13px; }
-.pc-question-why { margin: 0; font-size: 12px; color: var(--dsw-alias-label-secondary); }
-.pc-chip {
-  box-sizing: border-box;
-  height: 24px;
-  padding: 0 9px;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 999px;
-  background: var(--dsw-alias-bg-layer-1);
-  color: var(--dsw-alias-label-primary);
-  font: inherit;
-  font-size: 12px;
-  line-height: 1;
-  cursor: pointer;
-}
-.pc-chip:hover { background: var(--dsw-alias-bg-layer-2); }
-.pc-chip[data-selected="true"] {
-  border-color: var(--dsw-alias-brand-primary);
-  color: var(--dsw-alias-brand-primary);
-  background: var(--dsw-alias-bg-layer-2);
-}
-.pc-chip:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }
-.pc-answer-input {
-  box-sizing: border-box;
-  flex: 1;
-  min-width: 120px;
-  height: 26px;
-  padding: 0 8px;
-  border: 1px solid var(--dsw-alias-border-l1);
-  border-radius: 6px;
-  background: var(--dsw-alias-bg-layer-1);
-  color: var(--dsw-alias-label-primary);
-  font: inherit;
-  font-size: 12px;
-}
-.pc-answer-input:focus { outline: 1px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }
-.pc-question-actions { display: flex; gap: 6px; flex-wrap: wrap; }
-.pc-cards { display: flex; flex-direction: row; flex-wrap: wrap; align-items: stretch; gap: 10px; }
-.pc-cards > * { flex: 1 1 320px; min-width: 280px; }
-.pc-card {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 8px 10px 10px;
-  border: 1px solid var(--dsw-alias-border-l1);
-  border-radius: 8px;
-  background: var(--dsw-alias-bg-base);
-}
-.pc-card-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
-.pc-card-label { font-weight: 600; }
-.pc-ratio { font-size: 12px; color: var(--dsw-alias-label-secondary); font-variant-numeric: tabular-nums; }
-.pc-warn {
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  padding: 1px 6px;
-  border: 1px solid var(--dsw-alias-state-warn-primary);
-  border-radius: 999px;
-  color: var(--dsw-alias-state-warn-primary);
-  font-size: 11px;
-  line-height: 1.4;
-}
-.pc-card-text {
-  max-height: 12em;
-  overflow: auto;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-size: 13px;
-  line-height: 1.5;
-}
-.pc-add {
-  background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 16%, transparent);
-  border-radius: 3px;
-  color: inherit;
-}
-.pc-card-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-.pc-panel-summary { flex-direction: row; align-items: center; gap: 8px; }
-.pc-check { color: var(--dsw-alias-state-success-primary); }
-.pc-summary-text { font-size: 12px; color: var(--dsw-alias-label-secondary); }
+.pc-btn:hover:not(:disabled) { background: var(--dsw-alias-bg-layer-2); }
+.pc-btn:disabled, .pc-chip:disabled, .pc-switch:disabled { opacity: .5; cursor: default; }
+.pc-btn-primary { background: var(--pc-accent); border-color: var(--pc-accent); color: var(--dsw-alias-bg-base); font-weight: 600; }
+.pc-btn-primary:hover:not(:disabled) { background: var(--pc-accent); box-shadow: 0 3px 12px color-mix(in srgb, var(--pc-accent) 25%, transparent); }
+.pc-btn-ghost { border-color: transparent; background: transparent; color: var(--pc-muted); }
+.pc-btn-ghost[aria-pressed="true"] { color: var(--pc-accent); background: var(--pc-tint); }
+.pc-panel-actions, .pc-card-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.pc-panel-foot { flex: none; display: flex; flex-direction: column; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--pc-line); background: var(--pc-surface); }
+.pc-card-actions { justify-content: space-between; }
+.pc-action-group { display: flex; gap: 6px; align-items: center; }
+.pc-panel-foot .pc-panel-actions { justify-content: space-between; }
+.pc-error, .pc-refused, .pc-warning { margin: 0 0 12px; padding: 10px 12px; border-radius: 10px; overflow-wrap: anywhere; font-size: 12px; line-height: 1.6; }
+.pc-error { color: var(--dsw-alias-state-error-primary); background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 8%, var(--pc-surface)); }
+.pc-refused, .pc-warning { color: var(--dsw-alias-state-warn-primary); background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 8%, var(--pc-surface)); }
+.pc-warning { margin-bottom: 0; }
+.pc-warn { display: block; }
+.pc-warning details { margin-top: 5px; }
+.pc-warning summary { cursor: pointer; }
+.pc-applied, .pc-check { color: var(--dsw-alias-state-success-primary); }
+.pc-applied { margin-bottom: 12px; font-size: 12px; }
+.pc-running { display: flex; align-items: center; gap: 8px; color: var(--pc-accent); font-size: 12px; }
+.pc-previous { margin: 0 0 14px; font-size: 12px; color: var(--pc-muted); }
+.pc-skeleton { display: flex; flex-direction: column; gap: 12px; padding: 10px 0 18px; min-height: 98px; }
+.pc-skeleton-bar { display: block; height: 10px; width: 96%; border-radius: 5px; background: linear-gradient(100deg, var(--dsw-alias-bg-layer-2) 25%, var(--pc-tint) 50%, var(--dsw-alias-bg-layer-2) 75%); background-size: 200% 100%; animation: pc-shimmer 1.8s ease-in-out infinite; }
+.pc-skeleton-bar:nth-child(2) { width: 85%; }
+.pc-skeleton-bar:nth-child(3) { width: 61%; }
+.pc-questions { margin-top: 20px; padding: 0; border: 1px solid var(--pc-line); border-radius: 11px; background: var(--dsw-alias-bg-base); }
+.pc-questions-toggle { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; padding: 12px 14px; border: 0; border-radius: 11px; background: transparent; color: var(--pc-ink); text-align: start; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; }
+.pc-questions-content { display: flex; flex-direction: column; gap: 14px; padding: 0 14px 14px; }
+.pc-question { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.pc-question-text { font-size: 13px; overflow-wrap: anywhere; }
+.pc-question-why { margin: 0; font-size: 12px; color: var(--pc-muted); overflow-wrap: anywhere; }
+.pc-question-row, .pc-question-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.pc-question-row .pc-answer-input { flex: 1 1 180px; min-width: 0; }
+.pc-chip { min-height: 28px; max-width: 100%; padding: 4px 10px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 999px; background: var(--pc-surface); color: var(--pc-ink); font: inherit; font-size: 12px; overflow-wrap: anywhere; cursor: pointer; }
+.pc-chip:hover { background: var(--pc-tint); }
+.pc-chip[data-selected="true"] { border-color: var(--pc-accent); color: var(--pc-accent); background: var(--pc-tint); }
+.pc-answer-input { width: 100%; min-height: 32px; padding: 5px 10px; border: 1px solid var(--pc-line); border-radius: 8px; background: var(--pc-surface); color: var(--pc-ink); font: inherit; font-size: 12px; }
+.pc-panel-summary { flex-direction: row; align-items: center; gap: 10px; padding: 12px 16px; }
+.pc-summary-text { color: var(--pc-muted); font-size: 12px; }
 .pc-summary-spacer { flex: 1; }
-.pc-settings {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  color: var(--dsw-alias-label-primary);
-  font-size: 13px;
-  line-height: 1.5;
-}
-.pc-settings-title { margin: 0; font-size: 14px; font-weight: 600; }
-.pc-settings-intro { margin: 0; font-size: 12px; color: var(--dsw-alias-label-secondary); }
-.pc-field { display: flex; flex-direction: column; gap: 4px; }
+.pc-settings { display: flex; flex-direction: column; gap: 18px; max-width: 720px; width: 100%; font-size: 14px; line-height: 1.7; }
+.pc-settings-hero { display: flex; align-items: center; gap: 12px; padding-block: 4px 6px; }
+.pc-settings-title { margin: 0; font-size: 18px; font-weight: 650; }
+.pc-settings-intro, .pc-field-hint { margin: 0; color: var(--pc-muted); font-size: 12px; overflow-wrap: anywhere; }
+.pc-settings-group { display: flex; flex-direction: column; gap: 16px; padding: 20px; border: 1px solid var(--pc-line); border-radius: 14px; background: var(--pc-surface); }
+.pc-group-title { margin: 0; font-size: 14px; font-weight: 600; }
+.pc-field { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .pc-field-label { font-size: 13px; font-weight: 500; }
-.pc-field-hint { margin: 0; font-size: 12px; color: var(--dsw-alias-label-secondary); }
-.pc-textarea {
-  box-sizing: border-box;
-  width: 100%;
-  min-height: 76px;
-  padding: 8px;
-  border: 1px solid var(--dsw-alias-border-l1);
-  border-radius: 8px;
-  background: var(--dsw-alias-bg-layer-1);
-  color: var(--dsw-alias-label-primary);
-  font: inherit;
-  font-size: 13px;
-  line-height: 1.5;
-  resize: vertical;
-}
-.pc-textarea:focus { outline: 1px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }
-.pc-toggle { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
-.pc-toggle-copy { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.pc-switch {
-  box-sizing: border-box;
-  position: relative;
-  flex: none;
-  width: 34px;
-  height: 20px;
-  margin-top: 2px;
-  padding: 0;
-  border: 1px solid var(--dsw-alias-border-l2);
-  border-radius: 999px;
-  background: var(--dsw-alias-bg-layer-2);
-  cursor: pointer;
-}
-.pc-switch[data-on="true"] {
-  border-color: var(--dsw-alias-brand-primary);
-  background: var(--dsw-alias-brand-primary);
-}
-.pc-switch:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }
-.pc-switch-knob {
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  display: block;
-  width: 14px;
-  height: 14px;
-  border-radius: 999px;
-  background: var(--dsw-alias-bg-base);
-  transition: left 120ms ease;
-}
-.pc-switch[data-on="true"] .pc-switch-knob { left: 16px; }
-.pc-select {
-  box-sizing: border-box;
-  height: 28px;
-  max-width: 100%;
-  padding: 0 8px;
-  border: 1px solid var(--dsw-alias-border-l1);
-  border-radius: 6px;
-  background: var(--dsw-alias-bg-layer-1);
-  color: var(--dsw-alias-label-primary);
-  font: inherit;
-  font-size: 12px;
-}
-.pc-select:focus { outline: 1px solid var(--dsw-alias-brand-primary); outline-offset: 1px; }
-.pc-settings-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.pc-status { font-size: 12px; color: var(--dsw-alias-label-secondary); }
+.pc-field-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.pc-field-count { color: var(--pc-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+.pc-textarea { width: 100%; min-height: 140px; padding: 12px; border: 1px solid var(--pc-line); border-radius: 10px; background: var(--dsw-alias-bg-base); color: var(--pc-ink); font: inherit; font-size: 13px; line-height: 1.7; resize: vertical; }
+.pc-textarea::placeholder, .pc-answer-input::placeholder { color: var(--pc-muted); opacity: .8; }
+.pc-toggle { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
+.pc-toggle + .pc-toggle { border-top: 1px solid var(--pc-line); padding-top: 16px; }
+.pc-toggle-copy { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.pc-switch { position: relative; flex: none; width: 36px; height: 22px; padding: 0; margin-top: 2px; border: 1px solid var(--dsw-alias-border-l2); border-radius: 999px; background: var(--dsw-alias-bg-layer-2); cursor: pointer; }
+.pc-switch[data-on="true"] { border-color: var(--pc-accent); background: var(--pc-accent); }
+.pc-switch-knob { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--dsw-alias-bg-base); transition: transform 140ms ease; }
+.pc-switch[data-on="true"] .pc-switch-knob { transform: translateX(14px); }
+.pc-select { width: 100%; min-height: 36px; padding: 6px 10px; border: 1px solid var(--pc-line); border-radius: 9px; background: var(--dsw-alias-bg-base); color: var(--pc-ink); font: inherit; font-size: 13px; }
+.pc-settings-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.pc-status { color: var(--pc-muted); font-size: 12px; overflow-wrap: anywhere; }
 .pc-status[data-kind="saved"] { color: var(--dsw-alias-state-success-primary); }
 .pc-status[data-kind="error"] { color: var(--dsw-alias-state-error-primary); }
+.pc-btn-root:focus-visible, .pc-panel button:focus-visible, .pc-settings button:focus-visible, .pc-panel summary:focus-visible, .pc-panel:focus-visible, .pc-settings select:focus-visible, .pc-textarea:focus-visible, .pc-answer-input:focus-visible { outline: 2px solid var(--dsw-alias-brand-primary); outline-offset: 3px; }
+@media (max-width: 480px) {
+  .pc-btn-root { padding: 0 6px; }
+  .pc-btn-root-label { display: none; }
+  .pc-panel-head { gap: 10px; padding: 12px 14px; }
+  .pc-panel-body { padding: 14px; }
+  .pc-panel-foot { padding: 10px 14px; }
+  .pc-card-actions { display: grid; grid-template-columns: 1fr; }
+  .pc-card-actions > .pc-action-group { justify-content: space-between; }
+  .pc-card-actions > .pc-action-group:last-child .pc-btn-primary { flex: 1; }
+  .pc-brand-icon { width: 30px; height: 30px; }
+  .pc-settings-group { padding: 16px; }
+  .pc-panel-summary { flex-wrap: wrap; padding: 10px 12px; }
+}
+@media (max-height: 420px) {
+  .pc-panel-head { padding-block: 8px; }
+  .pc-panel-foot { padding-block: 8px; }
+}
 @keyframes pc-spin { to { transform: rotate(360deg); } }
-@keyframes pc-breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+@keyframes pc-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+@keyframes pc-enter { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
 @media (prefers-reduced-motion: reduce) {
-  .pc-spin { animation: none; }
-  .pc-skeleton-bar { animation: none; }
-  .pc-switch-knob { transition: none; }
+  .pc-panel, .pc-spin, .pc-skeleton-bar { animation: none; }
+  .pc-panel *, .pc-settings *, .pc-btn-root { transition: none; }
 }
 `
 
@@ -552,6 +489,36 @@ window.__ModuleLoader__.load({
         return await response.json()
       } catch (error) {
         return null
+      }
+    }
+
+    /** Bound settings requests, including a stalled JSON body. */
+    async function settingsRequest(options = {}, lightweight = false) {
+      const controller = new AbortController()
+      clientRequests.add(controller)
+      const forward = () => controller.abort()
+      if (options.signal?.aborted) controller.abort()
+      else options.signal?.addEventListener('abort', forward, { once: true })
+      let timer
+      let cancel
+      try {
+        const stopped = new Promise((resolve, reject) => {
+          cancel = () => { const error = new Error('settings request interrupted'); error.name = 'AbortError'; reject(error) }
+          controller.signal.addEventListener('abort', cancel, { once: true })
+          timer = setTimeout(() => controller.abort(), 5000)
+          timer?.unref?.()
+          if (controller.signal.aborted) cancel()
+        })
+        const work = (async () => {
+          const response = await fetch(SETTINGS_PATH + (lightweight ? '?catalog=0' : ''), { credentials: 'same-origin', ...options, signal: controller.signal })
+          return { response, payload: await readJson(response) }
+        })()
+        return await Promise.race([work, stopped])
+      } finally {
+        clearTimeout(timer)
+        controller.signal.removeEventListener('abort', cancel)
+        options.signal?.removeEventListener('abort', forward)
+        clientRequests.delete(controller)
       }
     }
 
@@ -749,21 +716,6 @@ window.__ModuleLoader__.load({
       })
     }
 
-    /** Rebuild the draft a successful insertion should leave behind. */
-    function expectedAppliedText(originRaw, segments, clean) {
-      const text = String(originRaw ?? '')
-      if (segments.length === 1 && segments[0].start === 0 && segments[0].end === text.length) return clean
-      let output = ''
-      let cursor = 0
-      for (let index = 0; index < segments.length; index += 1) {
-        const segment = segments[index]
-        output += text.slice(cursor, segment.start)
-        output += index === segments.length - 1 ? clean : ''
-        cursor = segment.end
-      }
-      return output + text.slice(cursor)
-    }
-
     // ---------------------------------------------------------------------
     // Pure helpers exposed for the tests: apply.__internals
     // ---------------------------------------------------------------------
@@ -831,7 +783,7 @@ window.__ModuleLoader__.load({
      */
     function buildEnhanceBody(input) {
       const source = input !== null && typeof input === 'object' ? input : {}
-      const body = { draft: String(source.draft ?? '') }
+      const body = { protocolVersion: 2, draft: String(source.draft ?? '') }
       if (isNonEmptyString(source.sessionId)) body.sessionId = source.sessionId
       if (Array.isArray(source.attachments)) {
         const attachments = []
@@ -842,7 +794,7 @@ window.__ModuleLoader__.load({
           attachments.push({
             index: Number.isFinite(item.index) ? item.index : index + 1,
             name,
-            kind: item.kind === 'link' ? 'link' : 'file',
+            kind: item.kind === 'image' ? 'image' : item.kind === 'link' ? 'link' : 'file',
           })
         })
         if (attachments.length > 0) body.attachments = attachments
@@ -851,6 +803,9 @@ window.__ModuleLoader__.load({
       if (answers.length > 0) body.answers = answers
       const revise = normalizeRevise(source.revise)
       if (revise !== null) body.revise = revise
+      if (source.clarificationMode === 'proceed') body.clarificationMode = 'proceed'
+      if (source.revisionContext) body.revisionContext = source.revisionContext
+      if (Array.isArray(source.images) && source.images.length) body.images = source.images
       return body
     }
 
@@ -972,17 +927,106 @@ window.__ModuleLoader__.load({
     // ---------------------------------------------------------------------
 
     const tasks = new Map()
+    const composerSnapshots = new Map()
+    let conversationService
+    const fileIdentities = new WeakMap()
+    let nextFileIdentity = 1
+
+    function draftAttachments(ids) {
+      if (!ids.length) return []
+      const entries = conversationService?.resolveDraftAttachments?.(ids)
+      if (!Array.isArray(entries) || entries.length !== ids.length) throw new Error('missing attachments')
+      return entries
+    }
+
+    function attachmentFingerprint(ids) {
+      if (!conversationService?.resolveDraftAttachments) return ''
+      try { return JSON.stringify(draftAttachments(ids).map(entry => {
+        const file = entry.file
+        if (file && !fileIdentities.has(file)) fileIdentities.set(file, nextFileIdentity++)
+        return [entry.id, entry.kind, file ? fileIdentities.get(file) : null]
+      })) } catch { return 'unavailable' }
+    }
+
+    /** Encode only current image files. No payload is added to task/cache state. */
+    async function prepareDraftImages(ids, signal) {
+      let entries
+      try { entries = draftAttachments(ids) } catch { throw new Error(translate('error.imagesUnavailable')) }
+      const images = entries.map((entry, i) => ({entry, index:i + 1})).filter(({entry}) => entry.kind === 'image')
+      if (!images.length) return {images:[], attachments:entries.map((entry, i) => ({index:i+1, name:shortenAttachmentName(entry.file?.name), kind:'file'}))}
+      let total = 0
+      if (images.length > 8 || images.some(({entry}) => {
+        total += entry.file?.size ?? 0
+        return !['image/png','image/jpeg','image/webp','image/gif'].includes(entry.file?.type) || !entry.file?.size || entry.file.size > 10 * 1024 * 1024
+      }) || total > 20 * 1024 * 1024) throw new Error(translate('error.imageLimits'))
+      const {response, payload} = await settingsRequest({method:'GET', headers:{accept:'application/json'}, signal}, true)
+      if (!response.ok || payload?.capabilities?.draftImages !== true) throw new Error(translate('error.outdated'))
+      const encoded = []
+      for (const {entry, index} of images) {
+        if (signal.aborted) return null
+        let bytes
+        try { bytes = new Uint8Array(await entry.file.arrayBuffer()) } catch { throw new Error(translate('error.imageRead')) }
+        if (signal.aborted) return null
+        if (bytes.byteLength !== entry.file.size) throw new Error(translate('error.imageRead'))
+        let binary = ''
+        for (let i=0;i<bytes.length;i+=32768) binary += String.fromCharCode(...bytes.subarray(i,i+32768))
+        encoded.push({index,name:shortenAttachmentName(entry.file.name),mediaType:entry.file.type,data:btoa(binary)})
+      }
+      return {images:encoded,attachments:entries.map((entry,i)=>({index:i+1,name:shortenAttachmentName(entry.file?.name),kind:entry.kind==='image'?'image':'file'}))}
+    }
+    // Ephemeral presentation state never enters the result cache or wire format.
+    const views = new Map()
+    function viewFor(key) {
+      if (!views.has(key)) views.set(key, { expanded: undefined, original: false, diff: {}, questionsClosed: null })
+      return views.get(key)
+    }
+    function patchView(key, changes) {
+      Object.assign(viewFor(key), changes)
+      notifyTask(key)
+    }
     const taskListeners = new Map()
-    // The panel and the button live in two different slots, so the composer's
-    // live session key is published by the session-scoped button and read by the
-    // panel. The button element is kept too: a future floating seat needs it.
-    let currentSessionKey = ''
+    const CACHE_KEY = 'dsh-prompt-craft:results:v2'
+    const CACHE_LIMIT = 20
+    let cacheSource
+    let cacheSnapshot = null
+    const timers = new Map()
+    const clientRequests = new Set()
+    const preferenceListeners = new Set()
+    let runtimeTimeoutMs = 90000
+    let showDiffPreference = null
+
+    function savedTask(task) {
+      const { originRaw, originModel, originRev, originOccurrences, originAttachmentIds, questions, answers, candidates, meta, applied, collapsed, lastAnswers, lastRevise, restored, status, reason, changes, revisionContext, specificExhausted, clarificationMode, hadImages } = task
+      return { originRaw, originModel, originRev, originOccurrences, originAttachmentIds, questions, answers, candidates, meta, applied, collapsed, lastAnswers, lastRevise, restored, status, reason, changes, revisionContext, specificExhausted, clarificationMode, hadImages }
+    }
+
+    function cacheEntries() {
+      try {
+        const storage = globalThis.sessionStorage
+        if (storage === cacheSource && cacheSnapshot !== null) return cacheSnapshot
+        cacheSource = storage
+        const value = JSON.parse(storage?.getItem(CACHE_KEY) ?? '[]')
+        cacheSnapshot = Array.isArray(value) ? value.filter((entry) => typeof entry?.key === 'string' && entry.task && typeof entry.task.originRaw === 'string').slice(-CACHE_LIMIT) : []
+        return cacheSnapshot
+      } catch { return [] }
+    }
+
+    function cacheTask(key, task) {
+      try {
+        const entries = cacheEntries().filter((entry) => entry.key !== key)
+        if (task?.phase === 'ready' && (task?.candidates?.length || task?.questions?.length || task?.reason)) entries.push({ key, task: savedTask(task) })
+        cacheSnapshot = entries.slice(-CACHE_LIMIT)
+        globalThis.sessionStorage?.setItem(CACHE_KEY, JSON.stringify(cacheSnapshot))
+      } catch { /* Storage restrictions and quota failures keep the in-memory result usable. */ }
+    }
+
+    function clearTimer(key) {
+      clearTimeout(timers.get(key))
+      timers.delete(key)
+    }
+    // Both slots receive their own session-scoped input hooks and actions.
+    // Only the button's DOM anchor is shared, indexed by that same session.
     const buttonNodes = new Map()
-    // The overlay panel has no composer props of its own, so the session-scoped
-    // button publishes the live composer face (draft, revision, chips, actions)
-    // for it on every render. Without this the panel could preview but never
-    // apply, because insertText lives on the composer's props.
-    let composerBridge = { key: '', draft: '', draftRev: 0, occurrences: [], inputActions: null }
 
     function notifyTask(key) {
       const listeners = taskListeners.get(key)
@@ -1013,11 +1057,14 @@ window.__ModuleLoader__.load({
     function createTask() {
       return {
         phase: 'idle',
+        status: null, reason: '', changes: [], revisionContext: { versions: [], improvements: [] },
+        specificExhausted: false, clarificationMode: 'ask',
         controller: null,
         originRaw: '',
         originModel: '',
         originRev: 0,
         originOccurrences: [],
+        originAttachmentIds: [],
         questions: [],
         answers: {},
         candidates: [],
@@ -1030,11 +1077,26 @@ window.__ModuleLoader__.load({
         reviseTarget: null,
         lastAnswers: {},
         lastRevise: null,
+        restored: false,
+        partial: false,
+        fallback: null,
+        startedAt: 0,
       }
     }
 
     function getTask(key) {
-      const task = tasks.get(key)
+      let task = tasks.get(key)
+      if (task === undefined) {
+        const stored = cacheEntries().find((entry) => entry.key === key)?.task
+        if (stored?.applied && stored.collapsed === true) {
+          cacheTask(key, null)
+        } else if (stored && Array.isArray(stored.candidates)) {
+          task = { ...createTask(), ...stored, candidates: normalizeCandidates(stored.candidates), phase: 'ready', restored: true, controller: null }
+          if (task.candidates.length || task.questions.length || task.reason) { tasks.set(key, task); cacheTask(key, task) }
+          else task = undefined
+        }
+      }
+      if (task?.phase === 'ready' && cacheEntries().at(-1)?.key !== key) cacheTask(key, task)
       return task === undefined ? null : task
     }
 
@@ -1050,6 +1112,7 @@ window.__ModuleLoader__.load({
     function patchTask(key, changes) {
       const task = ensureTask(key)
       Object.assign(task, changes)
+      if (task.phase === 'ready' && ['phase', 'candidates', 'applied', 'collapsed', 'answers', 'questions', 'specificExhausted'].some((field) => Object.prototype.hasOwnProperty.call(changes, field))) cacheTask(key, task)
       notifyTask(key)
       return task
     }
@@ -1062,6 +1125,7 @@ window.__ModuleLoader__.load({
         label: isNonEmptyString(source.label) ? source.label : id,
         text: typeof source.text === 'string' ? source.text : '',
         warnings: Array.isArray(source.warnings) ? source.warnings.filter((item) => typeof item === 'string') : [],
+        details: Array.isArray(source.details) ? source.details.filter((item) => typeof item === 'string').slice(0, 8) : [],
       }
     }
 
@@ -1099,15 +1163,20 @@ window.__ModuleLoader__.load({
         provider: isNonEmptyString(raw.provider) ? raw.provider : '',
         model: isNonEmptyString(raw.model) ? raw.model : '',
         elapsedMs: Number.isFinite(raw.elapsedMs) ? raw.elapsedMs : null,
+        unchanged: raw.unchanged === true,
         context: raw.context === true,
         repaired: raw.repaired === true,
+        reasoningEffort: typeof raw.reasoningEffort === 'string' ? raw.reasoningEffort : '',
+        imagesUsed: Number.isSafeInteger(raw.imagesUsed) && raw.imagesUsed > 0 ? raw.imagesUsed : 0,
       }
     }
 
     function settleError(key, controller, message) {
       const task = tasks.get(key)
       if (task === undefined || task.controller !== controller) return
-      patchTask(key, { phase: 'error', error: message, controller: null })
+      clearTimer(key)
+      const fallback = task.fallback
+      patchTask(key, { ...(fallback ?? {}), phase: fallback ? 'ready' : 'error', error: message, lastAnswers: task.lastAnswers, lastRevise: task.lastRevise, clarificationMode: task.clarificationMode, controller: null, fallback: null })
     }
 
     /**
@@ -1122,50 +1191,82 @@ window.__ModuleLoader__.load({
       const key = sessionKey(sessionId)
       const draft = typeof input.draft === 'string' ? input.draft : ''
       const occurrences = normalizeOccurrences(input.occurrences)
-      const revise = normalizeRevise(input.revise)
-      const isRevise = revise !== null
-      if (!isRevise && draft.trim().length === 0 && !hasChipPlaceholder(draft)) return null
       const previous = getTask(key)
-      const answers = isRevise ? undefined : normalizeAnswers(input.answers)
-      const answersMap = isRevise ? (previous?.answers ?? {}) : answersToMap(answers)
-      const originRaw = isRevise ? (previous?.originRaw ?? draft) : draft
-      const originOccurrences = isRevise ? (previous?.originOccurrences ?? occurrences) : occurrences
-      const originModel = isRevise
-        ? (previous?.originModel ?? modelText(originRaw, originOccurrences))
-        : modelText(draft, occurrences)
+      if (previous?.restored && previous.hadImages && draft === (previous.applied?.text ?? previous.originRaw)) {
+        let available = false
+        try { available = draftAttachments(input.attachmentIds ?? []).some(entry=>entry.kind==='image') } catch {}
+        if (!available) {
+          patchTask(key, {error:translate('error.imagesUnavailable'),collapsed:false})
+          return null
+        }
+      }
+      const same = previous && !taskIsStale(previous, { draft, occurrences, draftRev: input.draftRev, attachmentIds: input.attachmentIds ?? [] })
+      const revise = same ? normalizeRevise(input.revise ?? (input.resume ? previous.lastRevise : null)) : null
+      const isRevise = revise !== null
+      if (!isRevise && draft.trim().length === 0 && !hasChipPlaceholder(draft) && !input.attachmentIds?.length) return null
+      const answersMap = { ...(same ? previous.lastAnswers : {}), ...answersToMap(normalizeAnswers(same || !previous ? input.answers : {})) }
+      const answers = normalizeAnswers(answersMap)
+      const continuing = same && (isRevise || input.resume)
+      const originRaw = continuing ? previous.originRaw : draft
+      const originOccurrences = continuing ? previous.originOccurrences : occurrences
+      const originModel = continuing ? previous.originModel : modelText(draft, occurrences)
+      const revisionContext = same ? previous.revisionContext : { versions: [], improvements: [] }
+      const clarificationMode = input.clarificationMode === 'proceed' ? 'proceed' : 'ask'
       const controller = new AbortController()
-      const body = buildEnhanceBody({
-        sessionId: key.length > 0 ? key : undefined,
-        draft: isRevise ? originModel : modelText(draft, occurrences),
-        attachments: isRevise ? [] : attachmentsFromOccurrences(draft, occurrences),
-        answers,
-        revise,
-      })
+      previous?.controller?.abort?.()
+      clearTimer(key)
+      const fallback = same ? (previous.fallback ?? (previous.phase === 'ready' ? savedTask(previous) : null)) : null
+      const body = buildEnhanceBody({ sessionId: key.length > 0 ? key : undefined,
+        draft: originModel, attachments: attachmentsFromOccurrences(originRaw, originOccurrences),
+        answers, revise, revisionContext, clarificationMode })
       patchTask(key, {
-        phase: 'running',
-        controller,
-        error: null,
-        refused: false,
-        kind: isRevise ? 'revise' : 'enhance',
-        reviseTarget: isRevise ? revise : null,
-        originRaw,
-        originModel,
-        originRev: Number.isFinite(input.draftRev)
-          ? input.draftRev
-          : (isRevise ? (previous?.originRev ?? 0) : 0),
-        originOccurrences,
-        questions: isRevise ? (previous?.questions ?? []) : [],
-        answers: answersMap,
-        candidates: isRevise ? (previous?.candidates ?? []) : [],
-        meta: isRevise ? (previous?.meta ?? null) : null,
-        applied: isRevise ? (previous?.applied ?? null) : null,
-        collapsed: isRevise ? (previous?.collapsed ?? false) : false,
-        lastAnswers: isRevise ? (previous?.lastAnswers ?? {}) : answersMap,
-        lastRevise: isRevise ? revise : null,
+        phase: 'running', controller, error: null, refused: false, partial: false, restored: false, fallback,
+        startedAt: Date.now(), kind: isRevise ? 'revise' : 'enhance', reviseTarget: revise,
+        originRaw, originModel, originRev: continuing ? previous.originRev : (Number.isFinite(input.draftRev) ? input.draftRev : 0),
+        originOccurrences, originAttachmentIds: continuing ? previous.originAttachmentIds : (input.attachmentIds ?? []),
+        originFingerprint: attachmentFingerprint(input.attachmentIds ?? []), hadImages: continuing ? previous.hadImages : false,
+        questions: continuing ? previous.questions : [], answers: answersMap,
+        candidates: continuing ? previous.candidates : [], meta: continuing ? previous.meta : null,
+        applied: continuing ? previous.applied : null, collapsed: false,
+        lastAnswers: answersMap, lastRevise: revise, revisionContext, clarificationMode,
+        status: null, reason: '', changes: [], specificExhausted: false,
       })
       // Fire and forget: any transport/host failure has already been folded into
       // the task record, and a rejected promise must not escape apply().
-      requestEnhance(key, body, controller, { isRevise, revise }).catch(() => {})
+      const armTimeout = () => {
+        clearTimer(key)
+        if (getTask(key)?.controller !== controller) return
+        const timer = setTimeout(() => {
+          settleError(key, controller, translate('error.timeout'))
+          controller.abort()
+        }, runtimeTimeoutMs + 10000)
+        timer?.unref?.()
+        timers.set(key, timer)
+      }
+      armTimeout()
+      readShowDiffPreference().then(armTimeout, () => {})
+      ;(async () => {
+        try {
+          const ids = input.attachmentIds ?? []
+          // Resolve browser-owned files only at request time, never from DOM or cached bytes.
+          if (ids.length && conversationService?.resolveDraftAttachments) {
+            const prepared = await prepareDraftImages(ids, controller.signal)
+            if (!prepared || controller.signal.aborted || tasks.get(key)?.controller !== controller) return
+            const live = composerSnapshots.get(key)
+            if (live && taskIsStale(tasks.get(key), live)) throw new Error(translate('error.imageStale'))
+            if (same && previous.hadImages && !prepared.images.length) throw new Error(translate('error.imagesUnavailable'))
+            if (prepared.images.length) {
+              body.images = prepared.images
+              body.language = translate('button.label') === 'Craft' ? 'en' : 'zh'
+              patchTask(key, {hadImages:true})
+            }
+            body.attachments = [...prepared.attachments, ...(body.attachments ?? []).filter(entry=>!prepared.attachments.some(other=>other.name===entry.name))]
+          } else if (ids.length || (same && previous.hadImages)) throw new Error(translate('error.imagesUnavailable'))
+          await requestEnhance(key, body, controller, {isRevise,revise})
+        } catch (error) {
+          if (!controller.signal.aborted) settleError(key,controller,error.message || translate('error.imageRead'))
+        }
+      })()
       return controller
     }
 
@@ -1188,6 +1289,8 @@ window.__ModuleLoader__.load({
       if (controller.signal.aborted) return
       const task = tasks.get(key)
       if (task === undefined || task.controller !== controller) return
+      const live = composerSnapshots.get(key)
+      if (task.hadImages && live && taskIsStale(task, live)) { settleError(key,controller,translate('error.imageStale')); return }
       if (response.ok !== true) {
         settleError(key, controller, hostMessage(payload) ?? translate('error.http', { status: response.status }))
         return
@@ -1202,41 +1305,26 @@ window.__ModuleLoader__.load({
     function applyEnhanceSuccess(key, controller, payload, context) {
       const task = tasks.get(key)
       if (task === undefined || task.controller !== controller) return
+      clearTimer(key)
+      if (payload.protocolVersion !== 2) { settleError(key, controller, translate('error.outdated')); return }
+      const status = payload.status
+      if (!['needs_input', 'ready', 'unchanged', 'blocked'].includes(status)) { settleError(key, controller, translate('error.badPayload')); return }
       const candidates = normalizeCandidates(payload.candidates)
-      if (context.isRevise) {
-        const target = context.revise
-        const replacement = candidates[0]
-        if (replacement === undefined) {
-          settleError(key, controller, translate('error.empty'))
-          return
-        }
-        const current = Array.isArray(task.candidates) ? task.candidates : []
-        const replaced = current.map((candidate) => (candidate.id === target.id ? replacement : candidate))
-        if (!replaced.some((candidate) => candidate.id === replacement.id)) replaced.push(replacement)
-        patchTask(key, {
-          phase: 'ready',
-          controller: null,
-          candidates: replaced,
-          meta: normalizeMeta(payload.meta) ?? task.meta,
-          error: null,
-          refused: false,
-        })
-        return
-      }
-      if (candidates.length === 0) {
-        settleError(key, controller, translate('error.empty'))
-        return
-      }
+      const questions = normalizeQuestions(payload.questions)
+      if (status === 'needs_input' && !questions.length) { settleError(key, controller, translate('error.badPayload')); return }
+      if ((status === 'ready' || status === 'unchanged') && !candidates.length) { settleError(key, controller, translate('error.empty')); return }
+      const changes = Array.isArray(payload.changes) ? payload.changes.filter(c => typeof c?.summary === 'string').slice(0, 8) : []
+      const previousContext = task.revisionContext ?? { versions: [], improvements: [] }
+      const revisionContext = status === 'ready' ? {
+        versions: [...previousContext.versions, { text: candidates[0].text, operation: context.revise?.instruction ?? 'enhance' }].slice(-3),
+        improvements: [...new Set([...previousContext.improvements, ...changes.map(c => c.summary)])].slice(-24),
+      } : previousContext
       patchTask(key, {
-        phase: 'ready',
-        controller: null,
-        questions: normalizeQuestions(payload.questions),
-        candidates,
-        meta: normalizeMeta(payload.meta),
-        error: null,
-        refused: false,
-        applied: null,
-        collapsed: false,
+        phase: 'ready', controller: null, status, reason: typeof payload.reason === 'string' ? payload.reason : '',
+        questions, candidates: status === 'needs_input' || status === 'blocked' ? (task.candidates.length ? task.candidates : task.fallback?.candidates ?? []) : candidates,
+        meta: normalizeMeta(payload.meta), changes, revisionContext,
+        specificExhausted: payload.meta?.specificExhausted === true,
+        error: null, refused: false, applied: task.applied, collapsed: false, fallback: null,
       })
     }
 
@@ -1251,7 +1339,9 @@ window.__ModuleLoader__.load({
         // Nothing to cancel.
       }
       const restoreReady = task.kind === 'revise' && Array.isArray(task.candidates) && task.candidates.length > 0
-      patchTask(key, { phase: restoreReady ? 'ready' : 'idle', controller: null, error: null })
+      clearTimer(key)
+      const fallback = task.fallback
+      patchTask(key, { ...(fallback ?? {}), phase: fallback || restoreReady ? 'ready' : 'idle', controller: null, error: null, fallback: null })
     }
 
     /** Drop everything known about a session (the panel's close button). */
@@ -1266,6 +1356,9 @@ window.__ModuleLoader__.load({
         }
       }
       tasks.delete(key)
+      views.delete(key)
+      clearTimer(key)
+      cacheTask(key, null)
       notifyTask(key)
     }
 
@@ -1298,45 +1391,59 @@ window.__ModuleLoader__.load({
      *
      * @returns {boolean} whether the composer accepted the edit.
      */
-    function applyCandidate(sessionId, candidate, inputActions) {
+    function taskIsStale(task, snapshot) {
+      const expected = task.applied?.text ?? task.originRaw
+      if (snapshot.draft !== expected) return true
+      if (JSON.stringify(snapshot.attachmentIds ?? []) !== JSON.stringify(task.originAttachmentIds ?? [])) return true
+      if (task.hadImages) {
+        try { if (!draftAttachments(snapshot.attachmentIds ?? []).some(entry=>entry.kind==='image')) return true } catch { return true }
+      }
+      if (task.originFingerprint && attachmentFingerprint(snapshot.attachmentIds ?? []) !== task.originFingerprint) return true
+      if (!task.applied && JSON.stringify(normalizeOccurrences(snapshot.occurrences)) !== JSON.stringify(normalizeOccurrences(task.originOccurrences))) return true
+      const revision = readLiveRev(snapshot.inputActions, snapshot.draftRev)
+      return !task.restored && revision !== (task.applied?.rev ?? task.originRev)
+    }
+
+    function applyCandidate(sessionId, candidate, inputActions, snapshot) {
       const key = sessionKey(sessionId)
       const task = getTask(key)
-      if (task === null || candidate === null || typeof candidate !== 'object') return false
+      if (task === null || task.phase !== 'ready' || task.status === 'needs_input' || candidate === null || typeof candidate !== 'object') return false
       if (inputActions === undefined || inputActions === null || typeof inputActions.insertText !== 'function') {
         patchTask(key, { refused: true })
         return false
       }
+      if (taskIsStale(task, { ...snapshot, inputActions })) {
+        patchTask(key, { refused: false, error: translate('panel.staleApply') })
+        return false
+      }
       try {
         const clean = stripPlaceholders(candidate.text)
-        const originRaw = String(task.originRaw ?? '')
-        const segments = planInsertion(originRaw, task.originOccurrences)
+        if (task.applied?.candidateText === clean && snapshot.draft === task.applied.text) {
+          closeTask(key)
+          return true
+        }
+        const originRaw = String(snapshot.draft ?? '')
+        const segments = originRaw.length === 0 && task.hadImages ? [{start:0,end:0}] : planInsertion(originRaw, snapshot.occurrences)
         if (segments.length === 0) {
           patchTask(key, { refused: true })
           return false
         }
-        let liveRev = Number.isFinite(task.originRev) ? task.originRev : 0
+        let liveRev = readLiveRev(inputActions, snapshot.draftRev)
+        let completed = 0
         for (let index = segments.length - 1; index >= 0; index -= 1) {
           const segment = segments[index]
           const payload = index === segments.length - 1 ? clean : ''
-          liveRev = readLiveRev(inputActions, liveRev)
-          if (callInsert(inputActions, payload, segment, liveRev)) continue
-          // The composer rejected the span; retry once with a fresh revision.
-          liveRev = readLiveRev(inputActions, liveRev)
-          if (callInsert(inputActions, payload, segment, liveRev)) continue
-          patchTask(key, { refused: true })
-          return false
+          if (!callInsert(inputActions, payload, segment, liveRev)) {
+            patchTask(key, { refused: completed === 0, partial: completed > 0 })
+            return false
+          }
+          completed += 1
+          liveRev = readLiveRev(inputActions, liveRev + 1)
         }
-        patchTask(key, {
-          phase: 'ready',
-          controller: null,
-          applied: { text: expectedAppliedText(originRaw, segments, clean), at: Date.now() },
-          collapsed: true,
-          refused: false,
-          error: null,
-        })
+        closeTask(key)
         return true
       } catch (error) {
-        patchTask(key, { refused: true, error: null })
+        patchTask(key, { partial: true, error: null })
         return false
       }
     }
@@ -1344,27 +1451,33 @@ window.__ModuleLoader__.load({
     /** Cached GET /settings read used to pick the default compare mode. */
     let settingsPreferencePromise = null
 
+    function publishPreferences(values, limits) {
+      showDiffPreference = values?.showDiff !== false
+      if (Number.isFinite(limits?.timeoutMs)) runtimeTimeoutMs = Math.max(1, Math.min(600000, limits.timeoutMs))
+      settingsPreferencePromise = Promise.resolve(showDiffPreference)
+      for (const listener of preferenceListeners) listener(showDiffPreference)
+    }
+
     function readShowDiffPreference() {
       if (settingsPreferencePromise === null) {
         settingsPreferencePromise = (async () => {
           try {
-            const response = await fetch(SETTINGS_PATH, {
-              method: 'GET',
-              credentials: 'same-origin',
-              headers: { accept: 'application/json' },
-            })
-            const payload = await readJson(response)
+            const { response, payload } = await settingsRequest({ method: 'GET', headers: { accept: 'application/json' } }, true)
             if (response.ok !== true) return null
             if (payload === null || typeof payload !== 'object' || payload.ok !== true) return null
             const values = payload.values
             if (values === null || typeof values !== 'object') return null
-            return values.showDiff !== false
+            publishPreferences(values, payload.limits)
+            return showDiffPreference
           } catch (error) {
             return null
           }
         })()
       }
-      return settingsPreferencePromise
+      return settingsPreferencePromise.then((value) => {
+        if (value === null) settingsPreferencePromise = null
+        return value
+      })
     }
 
     // ---------------------------------------------------------------------
@@ -1420,31 +1533,30 @@ window.__ModuleLoader__.load({
       const key = sessionKey(props?.sessionId)
       const buttonRef = useRef(null)
       const [, setVersion] = useState(0)
-      useEffect(() => {
-        currentSessionKey = key
-        const node = buttonRef.current
-        if (node !== null && node !== undefined) buttonNodes.set(key, node)
-        return () => {
-          if (currentSessionKey === key) currentSessionKey = ''
-          if (node !== null && buttonNodes.get(key) === node) buttonNodes.delete(key)
-          if (composerBridge.key === key) composerBridge = { key: '', draft: '', draftRev: 0, occurrences: [], inputActions: null }
-        }
-      }, [key])
       useEffect(() => subscribeTask(key, () => setVersion((value) => value + 1)), [key])
 
       const t = (translationKey, params) => componentTranslate(props, translationKey, params)
       const draft = readInputValue(props?.useInput, (state) => state.draft, '')
       const occurrences = readInputValue(props?.useInput, (state) => state.occurrences, [])
       const draftRev = readInputValue(props?.useInput, (state) => state.draftRev, 0)
+      const attachmentIds = readInputValue(props?.useInput, (state) => state.attachmentIds, [])
+      composerSnapshots.set(key, {draft, occurrences, draftRev, attachmentIds, inputActions:props?.inputActions})
       const task = getTask(key)
-      composerBridge = { key, draft, draftRev, occurrences, inputActions: props?.inputActions }
+      // An empty composer renders no button. A callback ref also runs when
+      // typing first makes it visible, unlike a session-only mount effect.
+      const setButtonNode = useCallback((node) => {
+        const previous = buttonRef.current
+        buttonRef.current = node
+        if (node !== null && node !== undefined) buttonNodes.set(key, node)
+        else if (buttonNodes.get(key) === previous) buttonNodes.delete(key)
+      }, [key])
 
       try {
         // Nothing to craft: the seat stays empty rather than showing a dead control.
-        if (typeof draft !== 'string' || (draft.trim().length === 0 && !hasChipPlaceholder(draft))) return null
+        if (typeof draft !== 'string' || (draft.trim().length === 0 && !hasChipPlaceholder(draft) && !attachmentIds.length)) return null
         const phase = task === null ? 'idle' : task.phase
-        const state = phase === 'running' ? 'running' : phase === 'ready' ? 'ready' : phase === 'error' ? 'error' : 'idle'
-        const labelKey = state === 'running'
+        const state = phase === 'running' ? 'running' : task?.status === 'needs_input' ? 'questions' : task?.status === 'blocked' ? 'error' : phase === 'ready' ? 'ready' : phase === 'error' ? 'error' : 'idle'
+        const labelKey = state === 'questions' ? 'button.questions' : state === 'running'
           ? 'button.running'
           : state === 'ready'
             ? 'button.done'
@@ -1452,7 +1564,7 @@ window.__ModuleLoader__.load({
               ? 'button.failed'
               : 'button.idle'
         const label = t(labelKey)
-        const icon = state === 'running'
+        const icon = state === 'questions' ? h('span', { 'aria-hidden': true }, '?') : state === 'running'
           ? h(Spinner, null)
           : state === 'ready'
             ? h(CheckIcon, null)
@@ -1466,27 +1578,28 @@ window.__ModuleLoader__.load({
               abortTask(key)
               return
             }
-            startTask(key, { draft, occurrences, draftRev })
+            if (current?.status === 'needs_input' && !taskIsStale(current, { draft, occurrences, draftRev, attachmentIds, inputActions: props?.inputActions })) { patchView(key, { questionsClosed: null }); patchTask(key, { collapsed: false }); return }
+            startTask(key, { draft, occurrences, draftRev: readLiveRev(props?.inputActions, draftRev), attachmentIds })
           } catch (error) {
-            // A click must never throw into the composer row.
+            patchTask(key, { phase: 'error', error: t('error.client'), controller: null })
           }
         }
         return h('button', {
           type: 'button',
-          ref: buttonRef,
+          ref: setButtonNode,
           className: 'pc-btn-root',
           'data-state': state,
           'aria-label': label,
           title: label,
           onClick: handleClick,
-        }, icon)
+        }, icon, h('span', { className: 'pc-btn-root-label' }, t(state === 'questions' ? 'button.labelQuestions' : state === 'running' ? 'button.labelRunning' : state === 'ready' ? 'button.labelDone' : state === 'error' ? 'button.labelFailed' : 'button.label')))
       } catch (error) {
         return null
       }
     }
 
     // ---------------------------------------------------------------------
-    // Preview / compare panel (conversation.composer.dock)
+    // Preview / compare panel (conversation.input.overlay)
     // ---------------------------------------------------------------------
 
     function warningText(code, t) {
@@ -1502,14 +1615,11 @@ window.__ModuleLoader__.load({
       }
     }
 
-    function formatRatio(value) {
-      const ratio = Number.isFinite(value) ? value : 1
-      return ratio.toFixed(1)
-    }
-
     function panelMetaBits(task, t) {
       const bits = []
       const meta = task.meta !== null && typeof task.meta === 'object' ? task.meta : null
+      if (meta?.unchanged === true) bits.push(t('panel.unchanged'))
+      if (meta?.imagesUsed > 0) bits.push(t('panel.images', {count:meta.imagesUsed}))
       const model = meta === null ? '' : (isNonEmptyString(meta.model) ? meta.model : (isNonEmptyString(meta.provider) ? meta.provider : ''))
       if (model.length > 0) bits.push(model)
       if (meta !== null && Number.isFinite(meta.elapsedMs)) {
@@ -1607,400 +1717,312 @@ window.__ModuleLoader__.load({
       return null
     }
 
+    /** Viewport coordinates, independent of DOM reads so edge cases are testable. */
+    function panelGeometry(box, viewport = {}, expanded) {
+      const width = Number.isFinite(viewport.width) ? Math.max(120, viewport.width) : 1024
+      const height = Number.isFinite(viewport.height) ? Math.max(120, viewport.height) : 800
+      const x = Number.isFinite(viewport.left) ? viewport.left : 0
+      const y = Number.isFinite(viewport.top) ? viewport.top : 0
+      const top = Number.isFinite(box?.top) ? box.top - y : height - 140
+      const room = Math.max(0, top - 24)
+      const reading = expanded === undefined ? room < 240 : expanded
+      const panelWidth = Math.min(reading ? 960 : (box?.width > 0 ? Math.min(860, box.width) : 760), width - 24)
+      const maxHeight = reading ? Math.min(height * .84, height - 24) : Math.min(Math.max(160, Math.min(height * .62, room)), height - 24)
+      const left = reading ? (width - panelWidth) / 2 : Math.max(12, Math.min((box?.left ?? (width - panelWidth) / 2) - x + ((box?.width ?? panelWidth) - panelWidth) / 2, width - panelWidth - 12))
+      return {
+        expanded: reading,
+        style: {
+          position: 'fixed', left: x + left,
+          bottom: reading ? Math.max(12, (height - maxHeight) / 2) : Math.max(12, Math.min(height - top + 10, height - maxHeight - 12)),
+          width: panelWidth, maxHeight, ...(reading ? { height: maxHeight } : {}),
+          // offsetTop matters when the on-screen keyboard moves the visual viewport.
+          ...(y ? { top: reading ? y + (height - maxHeight) / 2 : y + height - Math.max(12, Math.min(height - top + 10, height - maxHeight - 12)) - maxHeight, bottom: 'auto' } : {}),
+          zIndex: 2147483001, pointerEvents: 'auto',
+        },
+      }
+    }
+
+    function ReadingIcon({ compact = false }) {
+      return h('svg', { className: 'pc-icon', width: 16, height: 16, viewBox: '0 0 16 16', fill: 'none', stroke: 'currentColor', strokeWidth: 1.4, strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': 'true', focusable: 'false' },
+        h('path', { d: compact ? 'M2 6h4V2m8 8h-4v4M6 6 2 2m8 8 4 4' : 'M6 2H2v4m8 8h4v-4M2 2l4 4m8 8-4-4' }))
+    }
+
     function CraftPanel(props) {
-      const key = currentSessionKey.length > 0 ? currentSessionKey : sessionKey(props?.sessionId)
+      const key = sessionKey(props?.sessionId)
+      // Keep all four host selectors unconditional, even when idle or closed.
+      const draft = readInputValue(props?.useInput, (state) => state.draft, '')
+      const occurrences = readInputValue(props?.useInput, (state) => state.occurrences, [])
+      const draftRev = readInputValue(props?.useInput, (state) => state.draftRev, 0)
+      const attachmentIds = readInputValue(props?.useInput, (state) => state.attachmentIds, [])
+      const inputActions = props?.inputActions
+      const snapshot = { draft, draftRev, occurrences, attachmentIds, inputActions }
+      composerSnapshots.set(key, snapshot)
+      const startForComposer = (request) => startTask(key, { ...request, draftRev: readLiveRev(inputActions, request.draftRev ?? draftRev), attachmentIds })
       const task = getTask(key)
-      // The overlay is mounted for the whole frame, but the preference read is
-      // only useful once something is actually on screen.
+      const view = viewFor(key)
       const shown = task !== null && task.phase !== 'idle'
       const [, setVersion] = useState(0)
       const [copiedId, setCopiedId] = useState(null)
-      const [diffPreferences, setDiffPreferences] = useState({})
+      const [copyError, setCopyError] = useState(false)
+      const copyTimer = useRef(null)
+      const alive = useRef(true)
+      const copySession = useRef(key)
+      copySession.current = key
+      const [clock, setClock] = useState(Date.now())
       const [showDiffDefault, setShowDiffDefault] = useState(false)
-      // The panel rides in the composer dock, then lifts itself above the input
-      // with fixed positioning. If the host layout makes that unreliable (a
-      // transformed ancestor changes the containing block), it falls back to the
-      // in-flow dock position instead of rendering off-screen.
       const [anchor, setAnchor] = useState(null)
-      const [placement, setPlacement] = useState('floating')
       const panelRef = useRef(null)
+      const readingButton = useRef(null)
+      const focusReturn = useRef(null)
+      const collapsed = task?.phase === 'ready' && task?.applied !== null && task?.collapsed === true
+      const layout = panelGeometry(anchor?.box, anchor?.viewport, collapsed ? false : view.expanded)
+      const expanded = layout.expanded && !collapsed
+      const t = (translationKey, params) => componentTranslate(props, translationKey, params)
+      const setView = (changes) => patchView(key, changes)
+      const dismiss = () => {
+        if (getTask(key)?.phase === 'running') abortTask(key)
+        else closeTask(key)
+        buttonNodes.get(key)?.focus?.()
+      }
+
       useEffect(() => subscribeTask(key, () => setVersion((value) => value + 1)), [key])
+      useEffect(() => {
+        alive.current = true
+        return () => { alive.current = false; clearTimeout(copyTimer.current) }
+      }, [])
+      useEffect(() => { setCopiedId(null); setCopyError(false); clearTimeout(copyTimer.current) }, [key])
+      useEffect(() => {
+        const update = (value) => setShowDiffDefault(value)
+        preferenceListeners.add(update)
+        if (showDiffPreference !== null) update(showDiffPreference)
+        return () => preferenceListeners.delete(update)
+      }, [])
+      useEffect(() => {
+        if (task?.phase !== 'running') return undefined
+        setClock(Date.now())
+        const timer = setInterval(() => setClock(Date.now()), 1000)
+        timer?.unref?.()
+        return () => clearInterval(timer)
+      }, [key, task?.phase, task?.startedAt])
+      useEffect(() => {
+        if (!shown || typeof document === 'undefined' || typeof document.addEventListener !== 'function') return undefined
+        const onKey = (event) => {
+          if (event.isComposing || event.defaultPrevented) return
+          if (event.key === 'Escape') {
+            event.preventDefault()
+            if (expanded) setView({ expanded: false })
+            else dismiss()
+          } else if (expanded && event.key === 'Tab' && typeof portalCreate === 'function') {
+            // Only inspect descendants of our own ref; never query host DOM.
+            const nodes = Array.from(panelRef.current?.getElementsByTagName?.('*') ?? []).filter((node) =>
+              node.tabIndex >= 0 && !node.disabled && node.getClientRects().length > 0)
+            const current = nodes.indexOf(document.activeElement)
+            if (nodes.length === 0) { event.preventDefault(); panelRef.current?.focus?.(); return }
+            if (event.shiftKey && current <= 0) { event.preventDefault(); nodes.at(-1).focus() }
+            else if (!event.shiftKey && (current === -1 || current === nodes.length - 1)) { event.preventDefault(); nodes[0].focus() }
+          }
+        }
+        const keepFocus = (event) => {
+          if (expanded && typeof portalCreate === 'function' && !panelRef.current?.contains?.(event.target)) panelRef.current?.focus?.()
+        }
+        document.addEventListener('keydown', onKey)
+        document.addEventListener('focusin', keepFocus)
+        return () => {
+          document.removeEventListener('keydown', onKey)
+          document.removeEventListener('focusin', keepFocus)
+        }
+      }, [key, shown, expanded])
+      useEffect(() => {
+        if (!shown || !expanded || typeof portalCreate !== 'function') return undefined
+        const previous = focusReturn.current ?? (typeof document === 'undefined' ? null : document.activeElement)
+        focusReturn.current = null
+        panelRef.current?.focus?.()
+        return () => {
+          if (previous?.isConnected && previous.tagName !== 'BODY') previous.focus?.()
+          else if (getTask(key)?.phase === 'ready' && readingButton.current) readingButton.current.focus?.()
+          else buttonNodes.get(key)?.focus?.()
+        }
+      }, [key, shown, expanded])
       useEffect(() => {
         if (!shown) return undefined
         let cancelled = false
-        readShowDiffPreference().then((value) => {
-          if (cancelled) return
-          if (typeof value === 'boolean') setShowDiffDefault(value)
-        }, () => {})
-        return () => {
-          cancelled = true
-        }
+        readShowDiffPreference().then((value) => { if (!cancelled && typeof value === 'boolean') setShowDiffDefault(value) }, () => {})
+        return () => { cancelled = true }
       }, [shown])
 
       useMeasureEffect(() => {
-        if (!shown) {
-          setPlacement('floating')
-          return undefined
-        }
+        if (!shown) return undefined
         let raf = 0
         const measure = () => {
           raf = 0
           try {
-            if (typeof document === 'undefined' || typeof window === 'undefined') return
-            const viewportWidth = window.innerWidth
-            const viewportHeight = window.innerHeight
-            const fallbackWidth = Math.max(360, Math.min(760, viewportWidth - 32))
-            const element = buttonNodes.get(key)
-            const box = element === null || element === undefined ? null : composerBoxOf(element)
-            if (box === null || !Number.isFinite(box.top) || box.top <= 0) {
-              setAnchor({ left: Math.max(16, viewportWidth - fallbackWidth - 16), bottom: 120, width: fallbackWidth, maxHeight: Math.min(520, viewportHeight - 160) })
-              return
-            }
-            // Sit directly above the composer card, never wider than it.
-            const width = box.width > 0
-              ? Math.max(320, Math.min(box.width, Math.min(860, viewportWidth - 24)))
-              : fallbackWidth
-            const left = Math.max(12, Math.min(box.left + (box.width - width) / 2, viewportWidth - width - 12))
-            const bottom = Math.max(24, viewportHeight - box.top + 10)
-            const room = Math.max(160, Math.min(viewportHeight * 0.62, box.top - 24))
-            const maxHeight = Math.max(160, Math.min(room, viewportHeight - bottom - 12))
-            setAnchor({ left, bottom, width, maxHeight })
-          } catch (error) {
-            setAnchor(null)
-          }
+            if (typeof window === 'undefined') return
+            const vv = window.visualViewport
+            const viewport = { width: vv?.width ?? window.innerWidth, height: vv?.height ?? window.innerHeight, left: vv?.offsetLeft ?? 0, top: vv?.offsetTop ?? 0 }
+            const node = buttonNodes.get(key)
+            const box = node ? composerBoxOf(node) : null
+            setAnchor({ box, viewport })
+          } catch (error) { setAnchor(null) }
         }
         const schedule = () => {
-          if (typeof requestAnimationFrame !== 'function') {
-            measure()
-            return
-          }
-          if (raf !== 0) return
-          raf = requestAnimationFrame(measure)
+          if (typeof requestAnimationFrame !== 'function') { measure(); return }
+          if (raf === 0) raf = requestAnimationFrame(measure)
         }
         measure()
-        const canListen = typeof window.addEventListener === 'function'
-        if (canListen) {
-          window.addEventListener('resize', schedule)
-          window.addEventListener('scroll', schedule, true)
-        }
+        if (typeof requestAnimationFrame === 'function') schedule()
+        let card = buttonNodes.get(key)
+        while (card && card.getAttribute?.('data-composer-card') === null) card = card.parentElement
+        const observer = typeof ResizeObserver === 'function' ? new ResizeObserver(schedule) : null
+        if (card) observer?.observe(card)
+        const targets = typeof window === 'undefined' ? [] : [window, window.visualViewport].filter((target) => typeof target?.addEventListener === 'function')
+        for (const target of targets) { target.addEventListener('resize', schedule); target.addEventListener('scroll', schedule, true) }
         return () => {
-          if (canListen) {
-            window.removeEventListener('resize', schedule)
-            window.removeEventListener('scroll', schedule, true)
-          }
+          observer?.disconnect()
+          for (const target of targets) { target.removeEventListener('resize', schedule); target.removeEventListener('scroll', schedule, true) }
           if (raf !== 0 && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(raf)
-          raf = 0
         }
-      }, [shown, task === null ? 'idle' : task.phase])
+      }, [key, shown, task?.phase, draft])
 
-      // One look at where the panel actually landed. A portal can only fail to
-      // leave the composer's containing block, and in that case the in-flow dock
-      // seat is the honest fallback: visible below the card instead of gone.
-      useEffect(() => {
-        if (!shown || anchor === null || placement !== 'floating') return
-        try {
-          const node = panelRef.current
-          if (node === null || node === undefined || typeof node.getBoundingClientRect !== 'function') return
-          if (typeof window === 'undefined') return
-          const rect = node.getBoundingClientRect()
-          const viewportWidth = window.innerWidth
-          const viewportHeight = window.innerHeight
-          const element = buttonNodes.get(key)
-          const box = element === null || element === undefined ? null : composerBoxOf(element)
-          const limit = box === null ? viewportHeight : box.top
-          const onScreen = rect.width > 0 && rect.height > 0
-            && rect.left >= -2 && rect.top >= -2
-            && rect.right <= viewportWidth + 2 && rect.bottom <= viewportHeight + 2
-          const aboveComposer = rect.bottom <= limit + 2
-          if (!onScreen || !aboveComposer) setPlacement('flow')
-        } catch (error) {
-          setPlacement('flow')
-        }
-      }, [anchor, shown, placement, key])
-
-      const floatStyle = placement === 'floating'
-        ? {
-          position: 'fixed',
-          left: anchor === null ? 24 : anchor.left,
-          bottom: anchor === null ? 120 : anchor.bottom,
-          width: anchor === null ? 680 : anchor.width,
-          maxHeight: anchor === null ? 420 : anchor.maxHeight,
-          zIndex: 2147483000,
-          pointerEvents: 'auto',
-        }
-        : undefined
-
-      // A portalled panel uses the body as its containing block, so the fixed
-      // coordinates measured above are true viewport coordinates. Without
-      // react-dom the element stays in the dock and the geometry guard settles
-      // it in flow.
-      const mount = (element) => (placement === 'floating' ? portalToBody(element) : element)
-
-      const t = (translationKey, params) => componentTranslate(props, translationKey, params)
+      const mount = (element) => {
+        const tree = expanded ? h('div', { className: 'pc-modal-layer', onMouseDown: (event) => { if (event.target === event.currentTarget) setView({ expanded: false }) } }, element) : element
+        const portal = portalToBody(tree)
+        if (portal !== tree) return portal
+        return h(element.type, {
+          ...element.props, role: 'region', 'aria-modal': undefined,
+          style: { position: 'absolute', left: 0, bottom: 10, width: '100%', maxHeight: layout.style.maxHeight, ...(expanded ? { height: layout.style.maxHeight } : {}), zIndex: layout.style.zIndex, pointerEvents: 'auto' },
+        })
+      }
 
       try {
-        // The panel must never hold an empty shell.
-        if (task === null || task.phase === 'idle') return null
-
-        const bridged = composerBridge.key === key
-        const draft = bridged ? composerBridge.draft : readInputValue(props?.useInput, (state) => state.draft, '')
-        const occurrences = bridged ? composerBridge.occurrences : readInputValue(props?.useInput, (state) => state.occurrences, [])
-        const draftRev = bridged ? composerBridge.draftRev : readInputValue(props?.useInput, (state) => state.draftRev, 0)
-        const inputActions = bridged ? composerBridge.inputActions : props?.inputActions
-
-        const isDiffOn = (candidateId) => {
-          const explicit = diffPreferences[candidateId]
-          return explicit === undefined ? showDiffDefault : explicit === true
-        }
-        const toggleDiff = (candidateId) => {
-          setDiffPreferences((previous) => {
-            const current = previous[candidateId] === undefined ? showDiffDefault : previous[candidateId]
-            return { ...previous, [candidateId]: current !== true }
-          })
-        }
-        const handleCopy = (candidate) => {
+        if (!shown) return null
+        const running = task.phase === 'running'
+        const preview = running ? (task.fallback ?? (task.candidates.length ? task : null)) : task
+        const candidates = preview?.candidates ?? []
+        const origin = preview?.originModel ?? task.originModel
+        const isDiffOn = (id) => view.diff[id] === undefined ? showDiffDefault : view.diff[id]
+        const toggleDiff = (id) => setView({ diff: { ...view.diff, [id]: !isDiffOn(id) } })
+        const handleCopy = async (candidate) => {
           try {
-            const clipboard = typeof navigator !== 'undefined' && navigator !== null ? navigator.clipboard : undefined
-            if (clipboard !== undefined && clipboard !== null && typeof clipboard.writeText === 'function') {
-              const result = clipboard.writeText(candidate.text)
-              if (result !== null && typeof result === 'object' && typeof result.then === 'function') {
-                result.then(() => {}, () => {})
-              }
-            }
-            setCopiedId(candidate.id)
-            const timer = setTimeout(() => {
-              try {
-                setCopiedId((current) => (current === candidate.id ? null : current))
-              } catch (error) {
-                // Component may be gone.
-              }
-            }, COPY_RESET_MS)
-            if (timer !== null && typeof timer === 'object' && typeof timer.unref === 'function') timer.unref()
-          } catch (error) {
-            // Copy failures are silent by contract.
-          }
+            if (typeof navigator === 'undefined' || typeof navigator.clipboard?.writeText !== 'function') throw new Error('clipboard unavailable')
+            await navigator.clipboard.writeText(candidate.text)
+            if (!alive.current || copySession.current !== key) return
+            setCopyError(false); setCopiedId(candidate.id); clearTimeout(copyTimer.current)
+            copyTimer.current = setTimeout(() => { if (alive.current && copySession.current === key) setCopiedId(null) }, COPY_RESET_MS)
+            copyTimer.current?.unref?.()
+          } catch (error) { if (alive.current && copySession.current === key) { setCopiedId(null); setCopyError(true) } }
         }
         const setAnswer = (question, value) => {
           const current = getTask(key)
           if (current === null) return
           const answers = { ...(current.answers ?? {}) }
-          const text = String(value ?? '')
+          const text = String(value ?? '').slice(0, ANSWER_MAX)
           if (text.length === 0) delete answers[question]
           else answers[question] = text
           patchTask(key, { answers })
         }
-        const submitAnswers = () => {
-          try {
-            const current = getTask(key)
-            startTask(key, {
-              draft,
-              occurrences,
-              draftRev,
-              answers: current?.answers ?? {},
-            })
-          } catch (error) {
-            // Rendered error state is handled by the store.
-          }
-        }
         const retry = () => {
-          try {
-            const current = getTask(key)
-            if (current === null) return
-            if (current.kind === 'revise' && current.lastRevise !== null) {
-              startTask(key, {
-                draft: current.originRaw,
-                occurrences: current.originOccurrences,
-                draftRev: current.originRev,
-                revise: current.lastRevise,
-              })
-              return
-            }
-            startTask(key, {
-              draft: current.originRaw,
-              occurrences: current.originOccurrences,
-              draftRev: current.originRev,
-              answers: current.lastAnswers ?? {},
-            })
-          } catch (error) {
-            // Leave the error visible.
-          }
+          const current = getTask(key)
+          if (current === null) return
+          // A changed composer always starts a fresh run from its live draft.
+          if (taskIsStale(current, snapshot)) { startForComposer({ draft, occurrences, draftRev }); return }
+          startForComposer({
+            draft, occurrences, draftRev,
+            resume: true, answers: current.lastAnswers ?? {}, clarificationMode: current.clarificationMode,
+            ...(current.lastRevise !== null ? { revise: current.lastRevise } : {}),
+          })
         }
-        const header = (closeLabel) => h('div', { className: 'pc-panel-head' },
-          h('span', { className: 'pc-panel-title' }, t('panel.title')),
-          panelMetaBits(task, t).length > 0
-            ? h('span', { className: 'pc-panel-meta' }, panelMetaBits(task, t).join(' · '))
-            : null,
-          h('button', {
-            type: 'button',
-            className: 'pc-icon-btn',
-            'aria-label': closeLabel,
-            title: closeLabel,
-            onClick: () => closeTask(key),
-          }, '×'))
-
-        if (task.phase === 'running') {
-          return mount(h('div', { className: 'pc-panel', 'data-phase': 'running', 'data-panel': 'prompt-craft', ref: panelRef, style: floatStyle },
-            header(t('panel.cancel')),
-            h('div', { className: 'pc-skeleton', 'aria-label': t('panel.running') },
-              h('i', { className: 'pc-skeleton-bar' }),
-              h('i', { className: 'pc-skeleton-bar' }),
-              h('i', { className: 'pc-skeleton-bar' })),
-            h('div', { className: 'pc-panel-actions' },
-              h('span', { className: 'pc-panel-meta' }, t('panel.running')),
-              h('button', { type: 'button', className: 'pc-btn', onClick: () => abortTask(key) }, t('panel.cancel')))))
+        const header = () => h('div', { className: 'pc-panel-head' },
+          h('span', { className: 'pc-brand-icon' }, h(SparkIcon, null)),
+          h('div', { className: 'pc-heading' },
+            h('span', { className: 'pc-panel-title' }, t('panel.title')),
+            h('div', { className: 'pc-panel-meta' }, running ? t('panel.running') : panelMetaBits(task, t).join(' · ') || t('panel.subtitle'))),
+          h('div', { className: 'pc-head-actions' },
+            h('button', { ref: readingButton, type: 'button', className: 'pc-icon-btn', 'aria-label': t(expanded ? 'panel.compact' : 'panel.read'), title: t(expanded ? 'panel.compact' : 'panel.read'), onClick: (event) => { if (!expanded) focusReturn.current = event?.currentTarget ?? null; setView({ expanded: !expanded }) } }, h(ReadingIcon, { compact: expanded })),
+            h('button', { type: 'button', className: 'pc-icon-btn', 'aria-label': t(running ? 'panel.cancel' : 'panel.close'), title: t(running ? 'panel.cancel' : 'panel.close'), onClick: dismiss }, '×')))
+        const panelProps = {
+          className: 'pc-panel', 'data-phase': task.phase, 'data-status': task.status, 'data-panel': 'prompt-craft', 'data-reading': expanded ? 'expanded' : 'compact',
+          role: expanded ? 'dialog' : 'region', 'aria-modal': expanded ? 'true' : undefined,
+          'aria-label': t('panel.title'), tabIndex: -1, ref: panelRef, style: layout.style,
         }
+        if (collapsed) return mount(h('div', { ...panelProps, className: 'pc-panel pc-panel-summary' },
+          h('span', { className: 'pc-check', 'aria-hidden': 'true' }, '✓'),
+          h('span', { className: 'pc-summary-text' }, t('panel.applied')),
+          h('span', { className: 'pc-summary-spacer' }),
+          h('button', { type: 'button', className: 'pc-btn', onClick: () => patchTask(key, { collapsed: false }) }, t('panel.expand')),
+          h('button', { type: 'button', className: 'pc-btn', onClick: dismiss }, t('panel.close'))))
 
-        if (task.phase === 'error') {
-          return mount(h('div', { className: 'pc-panel', 'data-phase': 'error', 'data-panel': 'prompt-craft', ref: panelRef, style: floatStyle },
-            header(t('panel.close')),
-            h('p', { className: 'pc-error', role: 'alert' }, task.error ?? t('error.badPayload')),
-            h('div', { className: 'pc-panel-actions' },
-              h('button', { type: 'button', className: 'pc-btn pc-btn-primary', onClick: retry }, t('panel.retry')),
-              h('button', { type: 'button', className: 'pc-btn', onClick: () => closeTask(key) }, t('panel.close')))))
-        }
-
-        // Applied results fold into a one-line summary until expanded.
-        if (task.applied !== null && task.collapsed === true) {
-          return mount(h('div', { className: 'pc-panel pc-panel-summary', 'data-phase': 'ready', 'data-panel': 'prompt-craft', ref: panelRef, style: floatStyle },
-            h('span', { className: 'pc-check', 'aria-hidden': 'true' }, '✓'),
-            h('span', { className: 'pc-summary-text' }, t('panel.summary', { count: task.candidates.length })),
-            h('span', { className: 'pc-summary-spacer' }),
-            h('button', { type: 'button', className: 'pc-btn', onClick: () => patchTask(key, { collapsed: false }) }, t('panel.expand')),
-            h('button', { type: 'button', className: 'pc-btn', onClick: () => closeTask(key) }, t('panel.close'))))
-        }
-
-        const stale = task.applied !== null && draft !== task.applied.text
+        const stale = taskIsStale(task, snapshot)
         const renderCard = (candidate) => {
           const diffOn = isDiffOn(candidate.id)
-          let tokens = null
-          if (diffOn) {
-            try {
-              tokens = diffTokens(task.originModel, candidate.text)
-            } catch (error) {
-              tokens = [{ text: candidate.text, added: false }]
-            }
-          }
-          const ratio = ratioOf(task.originModel, candidate.text)
+          let tokens = [{ text: candidate.text, added: false }]
+          if (diffOn) { try { tokens = diffTokens(origin, candidate.text) } catch (error) { /* Plain text remains readable. */ } }
           return h('article', { className: 'pc-card', key: candidate.id, 'data-candidate': candidate.id },
             h('div', { className: 'pc-card-head' },
               h('span', { className: 'pc-card-label' }, candidate.label),
-              h('span', { className: 'pc-ratio', title: t('card.ratio', { ratio: formatRatio(ratio) }) },
-                t('card.ratio', { ratio: formatRatio(ratio) })),
-              candidate.warnings.map((warning, warningIndex) => {
-                const text = warningText(warning, t)
-                return h('span', {
-                  className: 'pc-warn',
-                  key: `warning-${warningIndex}`,
-                  title: text,
-                }, text)
-              })),
-            diffOn
-              ? h('div', { className: 'pc-card-text pc-diff' }, tokens.map((token, tokenIndex) => (
-                token.added
-                  ? h('mark', { className: 'pc-add', key: `token-${tokenIndex}` }, token.text)
-                  : h('span', { key: `token-${tokenIndex}` }, token.text)
-              )))
-              : h('div', { className: 'pc-card-text' }, candidate.text),
-            h('div', { className: 'pc-card-actions' },
-              h('button', {
-                type: 'button',
-                className: 'pc-btn pc-btn-ghost',
-                'aria-pressed': diffOn,
-                onClick: () => toggleDiff(candidate.id),
-              }, diffOn ? t('card.compareOff') : t('card.compare')),
-              h('button', {
-                type: 'button',
-                className: 'pc-btn pc-btn-primary',
-                onClick: stale
-                  ? () => startTask(key, { draft, occurrences, draftRev })
-                  : () => applyCandidate(key, candidate, inputActions),
-              }, stale ? t('panel.staleApply') : t('card.apply')),
-              h('button', {
-                type: 'button',
-                className: 'pc-btn',
-                onClick: () => startTask(key, {
-                  draft,
-                  occurrences,
-                  draftRev,
-                  revise: { id: candidate.id, text: candidate.text, instruction: 'shorter' },
-                }),
-              }, t('card.shorter')),
-              h('button', {
-                type: 'button',
-                className: 'pc-btn',
-                onClick: () => startTask(key, {
-                  draft,
-                  occurrences,
-                  draftRev,
-                  revise: { id: candidate.id, text: candidate.text, instruction: 'specific' },
-                }),
-              }, t('card.specific')),
-              h('button', {
-                type: 'button',
-                className: 'pc-btn',
-                onClick: () => handleCopy(candidate),
-              }, copiedId === candidate.id ? t('card.copied') : t('card.copy'))))
+              h('span', { className: 'pc-char-count' }, t('card.chars', { before: Array.from(origin).length, after: Array.from(candidate.text).length }))),
+            h('div', { className: 'pc-card-tools' },
+              h('button', { type: 'button', className: 'pc-btn pc-btn-ghost', 'aria-pressed': view.original, onClick: () => setView({ original: !view.original }) }, t(view.original ? 'card.hideOriginal' : 'card.showOriginal')),
+              h('button', { type: 'button', className: 'pc-btn pc-btn-ghost', 'aria-pressed': diffOn, onClick: () => toggleDiff(candidate.id) }, t(diffOn ? 'card.compareOff' : 'card.compare'))),
+            candidate.warnings.length ? h('div', { className: 'pc-warning', role: 'note' },
+              candidate.warnings.map((warning, i) => h('span', { className: 'pc-warn', key: i }, warningText(warning, t))),
+              candidate.details.length ? h('details', null, h('summary', null, t('warning.details')), candidate.details.map((detail, i) => h('div', { key: i }, detail))) : null) : null,
+            view.original ? h('section', { className: 'pc-original', 'aria-label': t('card.original') }, h('span', { className: 'pc-original-label' }, t('card.original')), h('div', { className: 'pc-card-text' }, origin)) : null,
+            diffOn ? h('div', { className: 'pc-card-text pc-diff' }, tokens.map((token, i) => token.added ? h('mark', { className: 'pc-add', key: i }, token.text) : h('span', { key: i }, token.text))) : h('div', { className: 'pc-card-text' }, candidate.text))
         }
-
+        const renderActions = (candidate) => h('div', { className: 'pc-card-actions', key: candidate.id },
+          h('div', { className: 'pc-action-group' },
+            ...['shorter', 'specific'].map((instruction) => h('button', { type: 'button', className: 'pc-btn pc-btn-ghost', key: instruction, disabled: running || task.status === 'needs_input' || (!stale && instruction === 'specific' && task.specificExhausted), onClick: () => startForComposer({ draft, occurrences, draftRev, revise: { id: candidate.id, text: candidate.text, instruction } }) }, t(`card.${instruction}`)))),
+          h('div', { className: 'pc-action-group' },
+            h('button', { type: 'button', className: 'pc-btn', onClick: () => handleCopy(candidate) }, copiedId === candidate.id ? t('card.copied') : t('card.copy')),
+            h('button', { type: 'button', className: 'pc-btn pc-btn-primary', disabled: running || task.status === 'needs_input', onClick: () => {
+              if (stale) startForComposer({ draft, occurrences, draftRev })
+              else if (applyCandidate(key, candidate, inputActions, snapshot)) { buttonNodes.get(key)?.focus?.() }
+            } }, stale ? t('panel.staleApply') : t('card.apply'))))
+        const questionsToken = task.questions
+        const questionsOpen = view.questionsClosed !== questionsToken
         const renderQuestions = () => {
-          if (!Array.isArray(task.questions) || task.questions.length === 0) return null
-          const nodes = task.questions.map((question, index) => {
-            const answer = task.answers?.[question.q] ?? ''
-            const optionChips = question.options.map((option) => h('button', {
-              type: 'button',
-              key: option,
-              className: 'pc-chip',
-              'aria-pressed': answer === option,
-              'data-selected': answer === option ? 'true' : undefined,
-              onClick: () => setAnswer(question.q, answer === option ? '' : option),
-            }, option))
-            const answerInput = h('input', {
-              type: 'text',
-              className: 'pc-answer-input',
-              value: answer,
-              placeholder: t('panel.answerPlaceholder'),
-              maxLength: ANSWER_MAX,
-              onChange: (event) => setAnswer(question.q, event.target.value),
-            })
-            return h('div', { className: 'pc-question', key: `question-${index}` },
-              h('div', { className: 'pc-question-text' }, `${index + 1}. ${question.q}`),
-              question.why.length > 0 ? h('p', { className: 'pc-question-why' }, question.why) : null,
-              h('div', { className: 'pc-question-row' }, optionChips, answerInput))
-          })
-          const actions = h('div', { className: 'pc-question-actions' },
-            h('button', { type: 'button', className: 'pc-btn pc-btn-primary', onClick: submitAnswers }, t('panel.questionsSubmit')),
-            h('button', {
-              type: 'button',
-              className: 'pc-btn pc-btn-ghost',
-              onClick: () => patchTask(key, { questions: [], answers: {} }),
-            }, t('panel.questionsIgnore')))
+          if (running || !task.questions.length) return null
           return h('section', { className: 'pc-questions' },
-            h('h3', { className: 'pc-questions-title' }, t('panel.questionsTitle')),
-            nodes,
-            actions)
+            h('button', { type: 'button', className: 'pc-questions-toggle', 'aria-label': t('panel.questionsTitle'), 'aria-expanded': questionsOpen, onClick: () => setView({ questionsClosed: questionsOpen ? questionsToken : null }) },
+              t('panel.questionsToggle', { count: task.questions.length }), h('span', { 'aria-hidden': 'true' }, questionsOpen ? '⌃' : '⌄')),
+            questionsOpen ? h('div', { className: 'pc-questions-content' }, task.questions.map((question, index) => {
+              const answer = task.answers?.[question.q] ?? ''
+              return h('div', { className: 'pc-question', key: question.q },
+                h('label', { className: 'pc-question-text', htmlFor: `pc-answer-${encodeURIComponent(key)}-${index}` }, `${index + 1}. ${question.q}`),
+                question.why ? h('p', { className: 'pc-question-why' }, question.why) : null,
+                h('div', { className: 'pc-question-row' },
+                  question.options.map((option) => h('button', { type: 'button', className: 'pc-chip', key: option, 'aria-pressed': answer === option, 'data-selected': answer === option ? 'true' : undefined, onClick: () => setAnswer(question.q, answer === option ? '' : option) }, option)),
+                  h('input', { id: `pc-answer-${encodeURIComponent(key)}-${index}`, type: 'text', className: 'pc-answer-input', value: answer, placeholder: t('panel.answerPlaceholder'), maxLength: ANSWER_MAX, onChange: (event) => setAnswer(question.q, event.target.value) })))
+            }), h('div', { className: 'pc-question-actions' },
+              h('button', { type: 'button', className: 'pc-btn pc-btn-primary', disabled: !task.questions.every(q => isNonEmptyString(task.answers?.[q.q])), onClick: () => startForComposer({ draft, occurrences, draftRev, resume: true, answers: getTask(key)?.answers ?? {} }) }, t('panel.questionsSubmit')),
+              h('button', { type: 'button', className: 'pc-btn pc-btn-ghost', onClick: () => startForComposer({ draft, occurrences, draftRev, resume: true, answers: getTask(key)?.answers ?? {}, clarificationMode: 'proceed' }) }, t('panel.questionsIgnore')))) : null)
         }
-
-        return mount(h('div', {
-          className: 'pc-panel',
-          'data-phase': 'ready',
-          'data-panel': 'prompt-craft',
-          role: 'region',
-          'aria-label': t('panel.title'),
-          ref: panelRef,
-          style: floatStyle,
-        },
-          header(t('panel.close')),
-          task.applied !== null ? h('div', { className: 'pc-applied' }, t('panel.applied')) : null,
-          task.refused === true ? h('div', { className: 'pc-refused', role: 'alert' }, t('panel.refused')) : null,
-          renderQuestions(),
-          h('div', { className: 'pc-cards' }, task.candidates.map(renderCard)),
-          h('div', { className: 'pc-panel-actions' },
-            h('button', { type: 'button', className: 'pc-btn', onClick: () => closeTask(key) }, t('panel.close')))))
+        const elapsed = Math.max(0, Math.floor((clock - task.startedAt) / 1000))
+        return mount(h('div', panelProps,
+          header(),
+          h('div', { className: 'pc-panel-body' },
+            task.error ? h('div', { className: 'pc-error', role: 'alert' }, task.error, task.phase !== 'error' ? h('button', { type: 'button', className: 'pc-btn', onClick: retry }, t('panel.retry')) : null) : null,
+            task.reason && !running ? h('p', { className: task.status === 'blocked' ? 'pc-error' : 'pc-result-reason', role: task.status === 'blocked' ? 'alert' : 'status' }, task.reason) : null,
+            task.changes.length && !running ? h('div', { className: 'pc-change-summary' }, h('strong', null, t('panel.changes')), h('ul', null, task.changes.map((change, index) => h('li', { key: index }, change.summary)))) : null,
+            task.specificExhausted && !stale && !running ? h('p', { className: 'pc-result-reason' }, t('panel.exhausted')) : null,
+            task.phase === 'ready' && !running ? h('button', { type: 'button', className: 'pc-btn pc-btn-ghost', onClick: () => { const q = t('panel.newInformation', { round: Object.keys(task.lastAnswers).length + 1 }); patchTask(key, { status: 'needs_input', specificExhausted: false, questions: [{ q, why: '', options: [] }], answers: { ...task.lastAnswers } }) } }, t('panel.addInformation')) : null,
+            task.status === 'blocked' && !running ? h('button', { type: 'button', className: 'pc-btn', onClick: retry }, t('panel.retry')) : null,
+            task.partial ? h('p', { className: 'pc-error', role: 'alert' }, t('panel.partial')) : null,
+            copyError ? h('p', { className: 'pc-error', role: 'alert' }, t('panel.copyFailed')) : null,
+            task.applied && !running ? h('div', { className: 'pc-applied' }, t('panel.applied')) : null,
+            task.refused ? h('div', { className: 'pc-refused', role: 'alert' }, t('panel.refused')) : null,
+            running && candidates.length ? h('p', { className: 'pc-previous' }, t('panel.previous')) : null,
+            candidates.length ? h('div', { className: 'pc-cards' }, candidates.map(renderCard)) : running ? h('div', { className: 'pc-skeleton', 'aria-label': t('panel.running') }, ...[0, 1, 2].map((i) => h('i', { className: 'pc-skeleton-bar', key: i }))) : null,
+            renderQuestions()),
+          h('div', { className: 'pc-panel-foot' },
+            running ? h('div', { className: 'pc-panel-actions' },
+              h('div', { className: 'pc-running', role: 'status' }, h(Spinner, null), t('panel.duration', { seconds: elapsed })),
+              h('button', { type: 'button', className: 'pc-btn', onClick: () => abortTask(key) }, t('panel.cancel')),
+              elapsed >= 10 ? h('span', { className: 'pc-panel-meta' }, t('panel.waiting')) : null) : null,
+            task.phase === 'error' ? h('div', { className: 'pc-panel-actions' }, h('button', { type: 'button', className: 'pc-btn pc-btn-primary', onClick: retry }, t('panel.retry')), h('button', { type: 'button', className: 'pc-btn', onClick: dismiss }, t('panel.close'))) : null,
+            ...candidates.map(renderActions))))
       } catch (error) {
-        // Rendering must never escape: a thrown slot blanks the whole dock.
-        return mount(h('div', { className: 'pc-panel', 'data-panel': 'prompt-craft', ref: panelRef, style: floatStyle },
-          h('div', { className: 'pc-panel-head' },
-            h('span', { className: 'pc-panel-title' }, componentTranslate(props, 'panel.title')))))
+        return mount(h('div', { className: 'pc-panel', ref: panelRef, 'data-panel': 'prompt-craft', style: layout.style }, h('div', { className: 'pc-panel-head' }, t('panel.title')), h('button', { type: 'button', className: 'pc-btn', onClick: dismiss }, t('panel.close'))))
       }
     }
 
@@ -2062,13 +2084,12 @@ window.__ModuleLoader__.load({
         const controller = typeof AbortController === 'function' ? new AbortController() : null
         ;(async () => {
           try {
-            const response = await fetch(SETTINGS_PATH, {
+            const { response, payload } = await settingsRequest({
               method: 'GET',
               credentials: 'same-origin',
               headers: { accept: 'application/json' },
               signal: controller === null ? undefined : controller.signal,
             })
-            const payload = await readJson(response)
             if (cancelled) return
             if (response.ok !== true || payload === null || typeof payload !== 'object' || payload.ok !== true) {
               // Degrade: still show preferences and switches, follow the
@@ -2080,6 +2101,7 @@ window.__ModuleLoader__.load({
               return
             }
             setValues(normalizeValues(payload.values))
+            publishPreferences(payload.values, payload.limits)
             const groups = normalizeCatalog(payload.catalog)
             setCatalog({ status: groups.length > 0 ? 'ready' : 'empty', groups })
             setStatus('idle')
@@ -2137,16 +2159,16 @@ window.__ModuleLoader__.load({
         }
         ;(async () => {
           try {
-            const response = await fetch(SETTINGS_PATH, {
+            const { response, payload } = await settingsRequest({
               method: 'POST',
               credentials: 'same-origin',
               headers: { 'content-type': 'application/json' },
               body: JSON.stringify(body),
             })
-            const payload = await readJson(response)
             if (!alive.current) return
             if (response.ok === true && payload !== null && typeof payload === 'object' && payload.ok === true) {
               setValues(normalizeValues(payload.values ?? body))
+              publishPreferences(payload.values ?? body, payload.limits)
               setStatus('saved')
               setMessage(null)
               return
@@ -2221,52 +2243,34 @@ window.__ModuleLoader__.load({
         }
 
         return h('div', { className: 'pc-settings', 'data-prompt-craft-settings': '' },
-          h('h2', { className: 'pc-settings-title' }, t('nav')),
-          h('p', { className: 'pc-settings-intro' }, t('settings.intro')),
-          h('label', { className: 'pc-field' },
-            h('span', { className: 'pc-field-label' }, t('settings.preferences.title')),
+          h('div', { className: 'pc-settings-hero' },
+            h('span', { className: 'pc-brand-icon' }, h(SparkIcon, null)),
+            h('div', null, h('h2', { className: 'pc-settings-title' }, t('nav')), h('p', { className: 'pc-settings-intro' }, t('settings.intro')))),
+          h('section', { className: 'pc-settings-group', 'aria-label': t('settings.preferences.title') },
+            h('div', { className: 'pc-field-head' },
+              h('h3', { className: 'pc-group-title' }, t('settings.preferences.title')),
+              h('span', { className: 'pc-field-count' }, t('settings.preferences.count', { count: values.preferences.length, max: PREFERENCES_MAX }))),
+            h('p', { className: 'pc-field-hint' }, t('settings.preferences.hint')),
             h('textarea', {
-              className: 'pc-textarea',
-              maxLength: PREFERENCES_MAX,
-              rows: 4,
-              placeholder: t('settings.preferences.placeholder'),
-              value: values.preferences,
-              onChange: (event) => updateValues({ preferences: event.target.value }),
-            })),
-          switchRow(
-            'context',
-            t('settings.context.title'),
-            t('settings.context.hint'),
-            values.context === true,
-            (next) => updateValues({ context: next }),
-          ),
-          switchRow(
-            'showDiff',
-            t('settings.showDiff.title'),
-            t('settings.showDiff.hint'),
-            values.showDiff === true,
-            (next) => updateValues({ showDiff: next }),
-          ),
-          h('label', { className: 'pc-field' },
-            h('span', { className: 'pc-field-label' }, t('settings.model.title')),
-            h('select', {
-              className: 'pc-select',
-              value: modelValue,
-              'aria-label': t('settings.model.title'),
-              onChange: handleModelChange,
-            }, modelOptions)),
-          h('div', { className: 'pc-settings-actions' },
-            h('button', {
-              type: 'button',
-              className: 'pc-btn pc-btn-primary',
+              className: 'pc-textarea', maxLength: PREFERENCES_MAX, rows: 5,
+              'aria-label': t('settings.preferences.title'),
+              placeholder: t('settings.preferences.placeholder'), value: values.preferences,
               disabled: status === 'saving',
-              onClick: handleSave,
-            }, t('settings.save')),
-            h('span', {
-              className: 'pc-status',
-              role: 'status',
-              'data-kind': statusKind,
-            }, statusText)))
+              onChange: (event) => updateValues({ preferences: event.target.value.slice(0, PREFERENCES_MAX) }),
+            })),
+          h('section', { className: 'pc-settings-group', 'aria-label': t('settings.preview.title') },
+            h('h3', { className: 'pc-group-title' }, t('settings.preview.title')),
+            switchRow('context', t('settings.context.title'), t('settings.context.hint'), values.context === true, (next) => updateValues({ context: next })),
+            switchRow('showDiff', t('settings.showDiff.title'), t('settings.showDiff.hint'), values.showDiff === true, (next) => updateValues({ showDiff: next }))),
+          h('section', { className: 'pc-settings-group', 'aria-label': t('settings.modelGroup.title') },
+            h('h3', { className: 'pc-group-title' }, t('settings.modelGroup.title')),
+            h('p', { className: 'pc-field-hint' }, t('settings.model.hint')),
+            h('label', { className: 'pc-field' },
+              h('span', { className: 'pc-field-label' }, t('settings.model.title')),
+              h('select', { className: 'pc-select', value: modelValue, 'aria-label': t('settings.model.title'), disabled: status === 'saving', onChange: handleModelChange }, modelOptions))),
+          h('div', { className: 'pc-settings-actions' },
+            h('button', { type: 'button', className: 'pc-btn pc-btn-primary', disabled: status === 'saving', onClick: handleSave }, t(status === 'saving' ? 'settings.saving' : 'settings.save')),
+            h('span', { className: 'pc-status', role: 'status', 'data-kind': statusKind }, statusText)))
       } catch (error) {
         return h('div', { className: 'pc-settings', 'data-prompt-craft-settings': '' },
           h('h2', { className: 'pc-settings-title' }, componentTranslate(props, 'nav')))
@@ -2372,6 +2376,19 @@ window.__ModuleLoader__.load({
      * @returns {void}
      */
     function apply(ctx) {
+      try { conversationService = ctx?.conversation ?? ctx?.get?.('conversation') } catch { conversationService = undefined }
+      effectOnce(ctx, () => () => {
+        for (const task of tasks.values()) task.controller?.abort?.()
+        for (const controller of clientRequests) controller.abort()
+        for (const key of timers.keys()) clearTimer(key)
+        tasks.clear()
+        views.clear()
+        taskListeners.clear()
+        buttonNodes.clear()
+        preferenceListeners.clear()
+        clientRequests.clear()
+        composerSnapshots.clear()
+      }, 'prompt-craft: request cleanup')
       // Dictionaries first: slot labels read them through the bound translate.
       effectOnce(ctx, () => registerLocale(ctx), 'prompt-craft: locale')
       try {
@@ -2387,14 +2404,16 @@ window.__ModuleLoader__.load({
     apply.__internals = {
       buildEnhanceBody,
       composerBoxOf,
+      panelGeometry,
       diffTokens,
       planInsertion,
       portalToBody,
       ratioOf,
+      prepareDraftImages,
     }
 
     return {
-      inject: ['slots', 'locale'],
+      inject: ['slots', 'locale', 'conversation'],
       apply,
     }
   },

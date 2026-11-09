@@ -16,3 +16,12 @@ debug.log
 # editor
 .vscode/
 .idea/
+
+# Explicit development evaluations and immutable runtime snapshots
+eval/.runtime/
+eval/reports/
+
+# UI verification output
+playwright-report/
+test-results/
+dev/screenshots/

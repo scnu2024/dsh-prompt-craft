@@ -1,87 +1,92 @@
 # Prompt craft · dsh-prompt-craft
 
-[中文](README.md) | English
+English | [中文](README.md)
 
-[![npm](https://img.shields.io/npm/v/dsh-prompt-craft.svg)](https://www.npmjs.com/package/dsh-prompt-craft)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+A DeepSeek Harness plugin that turns a draft into actionable instructions. Review the preview and explicitly apply it to the composer. It never sends a message.
 
-A button beside the composer that turns a rough draft into an instruction a capable executor will not misread — **without making the user's decisions for them**.
-The result is previewed above the input and written back only when you click apply; missing details become questions, not invented `<placeholders>`.
+## Two-stage crafting
 
-> A DeepSeek Harness (DSH) plugin. No runtime dependencies.
+Every request analyzes intent, confirmed information and the current version before asking questions or generating a complete prompt. Coding, writing, learning, analysis and everyday tasks share the same workflow.
 
----
+- Short drafts receive model analysis and useful execution details when justified.
+- Material missing choices produce up to two questions before a candidate. Answer them or explicitly choose “Continue with known information”.
+- Concrete facts must come from the draft, confirmed answers, attachment names, supplied user history or clearly readable evidence in the current images. Assistant guesses and generated versions never establish facts.
+- Simple requests use natural paragraphs; complex ones may use steps or headings. No fixed template or expansion ratio.
+- Complete instructions may stay unchanged with a specific explanation.
 
-## How it differs from a typical "prompt enhancer"
+“More specific” looks for unresolved execution gaps. It retains the original intent, cumulative answers, the latest three versions and improvement records. It pauses when more information is needed to improve further. “Add information” resumes the workflow. “Shorter” preserves goals and explicit restrictions.
 
-A typical enhancer asks the model to "make the draft complete": add a goal, background, acceptance criteria, turn one sentence into three. The result reads like a form letter and quietly invents requirements the user never stated.
+Repeated additions, same-direction version cycles and unsafe outputs are blocked while the previous candidate stays available. Factual and semantic checks are heuristic and cannot cover every meaning change.
 
-This plugin allows exactly three kinds of change:
+One operation shares a maximum of three model calls across analysis, generation and one recovery allowance. The default total timeout is 90 seconds. Transport and format errors remain visible.
 
-1. **Disambiguate** — when a sentence has two readings, pick the better-supported one or surface the difference as a question.
-2. **Fill a slot** — only when the draft itself carries the value. A value the draft does not contain is never written; it becomes a question, or the sentence stays general.
-3. **Make it executable** — order multi-part asks, drop duplication, and name the deliverable's form only when the draft implies it.
+## Install and upgrade
 
-Forbidden: any new fact (dates, numbers, paths, file names, URLs, versions, platforms, tools, lengths, audiences, success criteria…), section headings, filler openers or closers, length padding, and invented placeholders such as `<file path>` or "TBD".
-
-Those rules are not only a system prompt. A deterministic gate compares each result against the draft: invented facts, template headings, length blow-up and placeholders are detected, and the model gets one repair pass with the exact violations. A version that still fails is shown with a warning badge — never silently swapped for something else.
-
-## Install
-
-Requires DSH `>=0.2.2-rc.1 <0.3.0` and Node `>=22`. Restart Harness after installing.
+Requires DSH `>=0.2.2-rc.1 <0.3.0` and Node `>=22`.
 
 ```sh
-dsh plugin --profile desktop add dsh-prompt-craft   # desktop
-dsh plugin --profile web add dsh-prompt-craft       # web
+dsh plugin --profile desktop add dsh-prompt-craft
+dsh plugin --profile web add dsh-prompt-craft
 ```
 
-From source:
+For source installs, clone this repository and add its local directory. Restart Harness and refresh its window after upgrading. This source uses protocol v2; old clients receive an explicit refresh message. Settings remain compatible; old temporary preview caches are not migrated.
+
+## Preview and editing
+
+Questions, explanations and change summaries appear in the preview. Original comparison and change highlighting are independent. Expanded reading, light/dark themes and narrow windows are supported. Regeneration retains the previous preview; cancellation restores it.
+
+Applying checks the current draft, attachments and editor revision. Success closes the preview completely and clears that conversation's result cache. External edits start a new crafting task. Attachment chips are preserved. Changes use ordinary editor operations and can be undone; a rejected partial replacement keeps the preview open and shows recovery guidance.
+
+Window `sessionStorage` retains results, pending questions and typed answers for up to 20 conversations. Closing a result deletes its entry. Storage failure does not prevent crafting.
+
+## Settings and limits
+
+Draft PNG, JPEG, WebP and GIF images are sent to the selected model during analysis, generation and repair. Image-only drafts can be crafted too; missing intent produces a question first. Results display the number of referenced images. Historical images and ordinary file contents are not read.
+
+Up to 8 images, 10 MiB each and 20 MiB total are accepted. The chosen model must explicitly support image input. Unsupported, unknown or unavailable models produce guidance to select an image-capable conversation or crafting model, without automatic switching. `deepseek-account / deepseek-flash` has been verified.
+
+Changed images invalidate earlier tasks. Follow-up operations reread the current files; after refresh, missing images must be reattached. Image bytes never enter the plugin's sessionStorage or logs. Host attachment admission persists images under the existing Host attachment policy. Image observations remain model-dependent and may require review.
+
+Settings include writing preferences, optional conversation history, highlighting and a dedicated crafting model. The default follows the current conversation. Preferences live in `~/.dsh/prompt-craft/settings.json`; `DSH_PROMPT_CRAFT_SETTINGS` can override the path.
+
+Optional row configuration:
+
+```yaml
+- id: prompt-craft
+  name: dsh-prompt-craft
+  config:
+    maxDraftChars: 6000
+    maxOutputChars: 12000
+    maxOutputTokens: 3000
+    timeoutMs: 90000
+    contextMessages: 8
+    contextChars: 6000
+```
+
+Text fields are limited to 256 KiB, image requests to 28 MiB, and confirmed answers to 64. Exceeding a limit produces an explicit error without silently dropping content.
+
+## Data and development
+
+Calls use the DSH host model service and authenticated channel. Inputs include the draft, confirmations, attachment names, current draft images, revision records, preferences and optional text history. Ordinary file contents and historical images are not read. No telemetry or additional relay.
+
+Zero runtime dependencies and no production build. See [CONTRACT.md](CONTRACT.md) for protocol and UI contracts.
 
 ```sh
-git clone https://github.com/scnu2024/dsh-prompt-craft.git
-dsh plugin --profile desktop add ./dsh-prompt-craft
+npm run check
+npm test
+npm run preview:ui
+npm run test:ui
+npm run eval:images
+npm run eval:general:dev
+npm run eval:general:accept
+npm run eval:projects:verify
+npm run eval:projects:accept
 ```
 
-## Usage
+Real-model evaluations run only through explicit development commands. The general suite has 10 development cases and 20 independent acceptance cases across five categories, complete requests and iterative refinement. Acceptance requires at least 90% useful short-prompt improvements or material clarifications, with no invented facts, lost restrictions or repeated additions. Semantic judgments use two order-swapped model reviews; inspectable records are retained. The existing technical answer suites remain regression material.
 
-1. Write a draft in the composer (any length).
-2. Click the **craft** icon on the right of the composer.
-3. A card floats **above** the input:
-   - up to two **questions** at the top — answer them and click "regenerate with the answers";
-   - one `standard` version below, reordered so it can be executed without re-reading.
-4. Click "use this version" to write it back; or ask for "shorter" / "more specific"; or close the panel.
+See [general results](eval/GENERAL-RESULTS.md) and [evaluation instructions](eval/README.md).
 
-The run keeps going if you switch sessions. Applying is an ordinary composer edit, so `Ctrl+Z` still works. **It never sends a message.**
+The preview is non-streaming. Refresh interrupts in-flight work. Multiple attachment-preserving edits depend on the host and cannot be atomic.
 
-## Settings
-
-`Settings → Prompt craft`:
-
-| Option | Default | Meaning |
-|---|---|---|
-| My preferences | empty | Free text, e.g. `no section headings; lead with the conclusion`. Overrides the default style, never the no-invention rules. |
-| Use earlier messages | on | Reads the last few turns to avoid asking what the conversation already answered. |
-| Highlight changes | on | Marks added fragments in the preview. |
-| Which model | follow conversation | Pin a model used only for crafting. |
-
-Preferences live in `~/.dsh/prompt-craft/settings.json` (override with `DSH_PROMPT_CRAFT_SETTINGS`); nothing is written to the profile patch.
-
-## Data and privacy
-
-- Crafting is one call through DSH's own model service, using the session model (or the pinned one). No third-party relay.
-- Sent to the model: the draft, composer attachment names, optional prior turns, and your preference note. **Images are not read and no files are uploaded.**
-- Both routes sit on DSH's authenticated connection channel (`/api/prompt-craft/enhance`, `/api/prompt-craft/settings`); unauthenticated requests are rejected by the host.
-- The only local write is the preferences file. No telemetry, no external reporting.
-
-## Development
-
-```sh
-npm run check      # syntax checks
-npm test           # node --test, zero dependencies
-```
-
-There is no build step: `client.js` is a hand-written browser module, and `index.js` plus `lib/` are loaded by the host directly.
-
-## License
-
-[MIT](LICENSE). The icon is original artwork.
+[MIT](LICENSE)

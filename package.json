@@ -62,7 +62,24 @@
     "node": ">=22.0.0"
   },
   "scripts": {
-    "check": "node --check index.js && node --check client.js && node --check lib/prompt.js && node --check lib/gate.js && node --check lib/protocol.js && node --check lib/prefs.js && node --check lib/history.js && node --check lib/model.js && node --check lib/route.js",
-    "test": "node --test test/*.test.mjs"
+    "check": "node --check index.js && node --check client.js && node --check lib/prompt.js && node --check lib/gate.js && node --check lib/protocol.js && node --check lib/prefs.js && node --check lib/history.js && node --check lib/model.js && node --check lib/route.js && node --check lib/strategy.js && node --check lib/constraints.js && node --check lib/engine.js && node --check lib/clarification.js && node --check lib/images.js",
+    "test": "node --test test/*.test.mjs",
+    "eval:dev": "node eval/run.mjs dev",
+    "eval:accept": "node eval/run.mjs accept",
+    "eval:projects:dev": "DSH_EVAL_SUITE=projects node eval/run.mjs dev",
+    "eval:projects:accept": "DSH_EVAL_SUITE=projects node eval/run.mjs accept",
+    "eval:projects:verify": "node eval/verify-projects.mjs",
+    "preview:ui": "node dev/preview.mjs",
+    "test:ui": "playwright test",
+    "eval:general:dev": "DSH_EVAL_SUITE=general node eval/run.mjs dev",
+    "eval:general:accept": "DSH_EVAL_SUITE=general node eval/run.mjs accept",
+    "eval:general:holdout": "DSH_EVAL_SUITE=general node eval/run.mjs holdout",
+    "eval:images": "node eval/images-live.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.65.0",
+    "esbuild": "^0.28.2",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
   }
 }

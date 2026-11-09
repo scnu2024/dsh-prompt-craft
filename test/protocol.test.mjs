@@ -75,8 +75,21 @@ test('empty output has no candidates', () => {
 	assert.deepEqual(parseEnvelope(undefined).candidates, []);
 });
 
-test('a truncated object falls back instead of throwing', () => {
+test('a truncated object never becomes an applicable candidate', () => {
 	const parsed = parseEnvelope('{"questions":[],"candidates":[{"id":"terse","text":"写到一半');
-	assert.equal(parsed.candidates.length, 1);
+	assert.equal(parsed.candidates.length, 0);
+	assert.equal(parsed.invalid, true);
 	assert.equal(parsed.parsed, false);
+});
+
+test('v2 needs_input accepts questions without candidates',()=>{
+  const parsed=parseEnvelope(JSON.stringify({status:'needs_input',questions:[{q:'Audience?'}],candidates:[]}));
+  assert.equal(parsed.parsed,true);assert.equal(parsed.questions.length,1);assert.deepEqual(parsed.candidates,[]);
+});
+
+test('analysis can recover its explanation from the targeted question without another call', async()=>{
+  const {parseAnalysis}=await import('../lib/protocol.js');
+  const result=parseAnalysis(JSON.stringify({decision:'ask',questions:[{q:'Which failure?',why:'The error and operation are unknown.'}]}));
+  assert.equal(result.reason,'The error and operation are unknown.');
+  assert.equal(parseAnalysis(JSON.stringify({decision:'unchanged'})),undefined);
 });

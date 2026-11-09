@@ -1,0 +1,16 @@
+{
+  "captured": "2026-11-08",
+  "description": "Complete Host implementation frozen before the second technical policy revision. technicalPolicy is false.",
+  "sha256": {
+    "index.js": "0fd2ca650257e6f96509f6e4379a6d08014e88ecc80804bd0a8ad9757e9785e6",
+    "package.json": "9e1955f54289193abf295d0fe8d92bac605bf8f94aad784599a0346a8347e7e8",
+    "lib/gate.js": "feb82fcdddbe94cca97d1a4beb345ff594e68571324d318a15aa3824fab51146",
+    "lib/history.js": "e041b79150c8c562e1aa4a0f26bc61a6d83edbea139d7bb76edf0678f32e066a",
+    "lib/model.js": "35311aafc59d6e824cf2968eb5280ecfc5349851d4fcca63dc3875790819613c",
+    "lib/prefs.js": "7c6189cef09e5c73795030566e86023b6bb64472fd56ceb0c9538b01c318f834",
+    "lib/prompt.js": "6bd6c4d7990efb27d1777bdbb139a9fa744753507aa209c953b4e058c98ebeb6",
+    "lib/protocol.js": "b27c14286042b8436f36c252ed7c3ceecc6f339b66983532a26ed781439a7f1f",
+    "lib/route.js": "57e9cc50f85c8072f4c4bde4b04d71489c4e6b6d0dfe5fe950545d7b4fd1bc6b",
+    "lib/strategy.js": "48df313eb04c4961568769b9f5f0edb2b967b109edc0753d9eb81e66df15274f"
+  }
+}

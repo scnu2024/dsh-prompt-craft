@@ -30,7 +30,8 @@ export const SETTINGS_PATH = '/api/prompt-craft/settings';
 const DEFAULTS = Object.freeze({
 	maxDraftChars: 6000,
 	maxOutputTokens: 3000,
-	timeoutMs: 60_000,
+	maxOutputChars: 12000,
+	timeoutMs: 90_000,
 	contextMessages: 8,
 	contextChars: 6000,
 });
@@ -54,6 +55,7 @@ export function resolveConfig(raw) {
 	return {
 		maxDraftChars: positiveInteger(config.maxDraftChars, DEFAULTS.maxDraftChars, 100_000),
 		maxOutputTokens: positiveInteger(config.maxOutputTokens, DEFAULTS.maxOutputTokens, 64_000),
+		maxOutputChars: positiveInteger(config.maxOutputChars, DEFAULTS.maxOutputChars, 200_000),
 		timeoutMs: positiveInteger(config.timeoutMs, DEFAULTS.timeoutMs, 600_000),
 		contextMessages: positiveInteger(config.contextMessages, DEFAULTS.contextMessages, 40),
 		contextChars: positiveInteger(config.contextChars, DEFAULTS.contextChars, 100_000),
